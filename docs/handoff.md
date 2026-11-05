@@ -151,3 +151,69 @@ directory; this file is WP2's and has a unique basename. WP0's request to drop t
 WP4).
 - WP2's test fixtures (`shop_clone`, `run_git`) live in
   `tests/unit/rules/conftest.py`, not `tests/conftest.py`.
+
+## 2026-11-05 · WP3 · contract: new unmeasured reason `no_mutants`
+Affects WP4 (triage of `unmeasured_change`). Additive change to `models.py`:
+`UnmeasuredLocation.reason` gains `"no_mutants"`. It marks changed lines in a function
+mutmut generates no mutants for: nothing mutable in it (`pass`, `return x`), names mutmut
+never mutates (`__new__`, `__getattribute__`, `__setattr__`, an enum's `__init__` and
+`_generate_next_value_`), `# pragma: no mutate`, or a file libcst can't parse. Without it
+such a function would look `unreached`. Treat it like the other reasons: unmeasured, out of
+every score. The `Verdict` schema is unchanged (it doesn't include `EngineRun`).
+
+## 2026-11-05 · WP3 · engine behaviour WP4 relies on
+Details in `docs/impl/WP3.md`.
+- **Construction:** `MutmutEngine()` (optional `python=`, `max_children=`). `run` reads
+  `[tool.mutineer] test_paths` itself and asks mutmut for its own config.
+- **`mutants/` is deleted at the start of every `run` and `rerun`.** mutmut's cache gives
+  wrong answers across branches and passes (see `docs/spike-mutmut.md`, "mutmut 3.8.1
+  cache behaviour"). A user's own mutmut results in `mutants/` are lost. README (WP4):
+  please say so.
+- **Details** (`line`, `original`, `mutated`) are filled only for results that aren't
+  killed or caught by the type check. For `guarded_by_impl_only`, take the text from the
+  rule-pass record; the all-pass record of the same mutant (killed) has none.
+- **Rule pass outcomes:** a baseline failure in the rule pass sets `baseline_failed=True`
+  and keeps the all-pass results. If no rule test reaches the functions after all, each
+  of their mutants gets a rule result of `no_tests`.
+- **`rerun(names, ...)`:** reports exactly `names`, all with `run="rule"`. A name mutmut no
+  longer generates (its function was edited and renumbered, or deleted) comes back
+  `not_checked`, so `recheck` doesn't keep a stale `survived`. Note that after an edit to
+  the function, a stored name may now point at a *different* mutant: compare
+  `original`/`mutated` with the stored result if that matters. `rule_map` is unused; the
+  rule pass selects with `-m`. `functions`, `unmeasured`, `unreached` and
+  `tests_by_function` are empty.
+
+## 2026-11-05 · WP3 · spec corrections (mutmut wins)
+- Section 8, `functions.py`: the module name is the file path relative to the **project
+  root**, dotted, with a leading `src.` removed and `.__init__` dropped, not "relative to
+  its `source_paths` entry". Same result for the fixture and this repo.
+- Section 8, step 6: the line-mapping anchor is the first line of mutmut's rendering of
+  the function: a comment directly above it, else its decorator, else the `def` line.
+  `FunctionRef.start_line` stays the `def` line, as the contract says.
+Both are recorded in `docs/spike-mutmut.md`.
+
+## 2026-11-05 · WP3 · questions for the human / WP4
+1. **Untested-only changes and `diff_score`.** The spec says that when mutmut stops early
+   (no changed function has any test), every function is `unreached` and there are *no
+   results*. When only some functions are untested, their mutants do come back as
+   `no_tests`. So an untested new function lowers `diff_score` (section 3 item 9) only if
+   another changed function is tested. WP3 follows the spec as written. If both cases
+   should count the same, the engine could report the generated mutants as `no_tests` in
+   the stop-early case too; that's a small change in `MutmutEngine.run`.
+2. **`-m` in pytest `addopts`.** The rule pass combines a `-m` from `[tool.mutmut]
+   pytest_add_cli_args` as specified. A `-m` in the project's pytest `addopts` is
+   overridden by the rule pass's `-m` (pytest keeps the last), so a test excluded by
+   `addopts` (e.g. `-m "not slow"`) runs in the rule pass but not the all pass. That can
+   show up as `mutant_inconclusive`. Reading `addopts` from every pytest config file is
+   doable, but it isn't in the spec.
+
+## 2026-11-05 · WP3 · resolved: untested changes always count in `diff_score`
+Answers question 1 of "WP3 · questions for the human / WP4". The human decided that
+untested mutants always count. When mutmut stops early because no changed function has a
+test, `MutmutEngine.run` now reports every generated mutant as `no_tests` (`run="all"`,
+with `line`/`original`/`mutated`), and every function is still in `unreached`. So an
+untested change always lowers `diff_score`, whether or not another changed function is
+tested. This deviates from section 8 step 3 ("there are no results"). Affects WP4: no
+special case needed. `no_tests` mutants of `unreached` functions are counted like any
+others (section 3 item 9), and `diff_score` is `None` only when mutation didn't run.
+Question 2 (`-m` in `addopts`) is still open.

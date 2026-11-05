@@ -85,12 +85,19 @@ may change between versions.
 - **Diff lines must be mapped to mutmut function names ourselves.** Parse the
   head version of each changed file with libcst, find the function (or method)
   containing each changed line, and build its mutmut name
-  (`<module>.x_<func>` or `<module>.xǁ<Class>ǁ<method>`). Module path is relative
-  to the `source_paths` entry.
+  (`<module>.x_<func>` or `<module>.xǁ<Class>ǁ<method>`). ~~Module path is relative
+  to the `source_paths` entry.~~ **Corrected by WP3:** the module is the file path
+  relative to the project root, dotted, with a leading `src.` removed and `.__init__`
+  dropped (mutmut's `get_mutant_name`). `source_paths = ["src/shop"]` gives
+  `shop.pricing`, but `source_paths = ["lib/foo"]` gives `lib.foo.bar`, not `bar`.
 - **Mutant diff → file line** = the function's `def` line in the head file + (the
   hunk's old-side start − 1) + (the number of context lines before the first `-`
   line). `mutmut show` prints context lines first, so the hunk header alone is off by
-  that count. Needed so findings point at real lines.
+  that count. Needed so findings point at real lines. **Corrected by WP3:** line 1 of
+  the diff is where mutmut's rendering of the function starts, which is the first
+  comment line directly above it, else its first decorator (a lone `@staticmethod` or
+  `@classmethod`), else the `def` line. Using the `def` line is off by one per comment
+  or decorator line.
 - **New finding: "unmeasured change".** Changed lines that mutmut cannot mutate
   (decorated functions, module-level code) are reported as `unmeasured`, listed
   by file and line, and excluded from the score so they never look tested. In
@@ -98,3 +105,90 @@ may change between versions.
 - **Upstream asks for mutmut** (open as issues, in this order): a stable JSON
   report, a public config-override API, an operator hook (v0.2), opt-in mutation
   of decorated functions.
+
+## WP3 engine findings
+
+Verified on 2026-11-05 with mutmut 3.8.1, Python 3.14, macOS, by the WP3 engine and its
+tests (`tests/e2e/test_engine_e2e.py`). Where these differ from the notes above, these win.
+
+### Fixture branch `agent-gap`, as the engine reports it
+
+`MutmutEngine.run` against `main`, with the SHIP-003 rule map. Lines are head-file lines
+from the corrected mapping; mutants are listed by text, not number. The engine only
+fetches text for mutants that aren't killed; the text of the three killed in both passes
+was checked with `mutmut show`.
+
+| Head line | Original | Mutated | All pass | Rule pass |
+|---|---|---|---|---|
+| 6 | `def quote(total, express=False):` | `def quote(total, express=True):` | killed | killed |
+| 8 | `if total >= FREE_SHIPPING_MIN:` | `if total > FREE_SHIPPING_MIN:` | survived | survived |
+| 9 | `return 0` | `return 1` | killed | killed |
+| 10 | `rate = _rate(total)` | `rate = None` | killed | killed |
+| 10 | `rate = _rate(total)` | `rate = _rate(None)` | survived | survived |
+| 12 | `rate += EXPRESS_FEE` | `rate = EXPRESS_FEE` | killed | survived |
+| 12 | `rate += EXPRESS_FEE` | `rate -= EXPRESS_FEE` | killed | survived |
+
+- All pass 5 of 7 killed, rule pass 3 of 7, as in the spike.
+- `EXPRESS_FEE = 10` (line 3) is unmeasured, reason `module_level`.
+- `x_quote`'s covering tests: both SHIP-003 tests and `tests/test_express.py::test_express_adds_fee`.
+- `_rate` is unchanged on this branch, and has no mutants anyway (see below).
+
+### What mutmut mutates (ground truth)
+
+A corpus of tricky cases, compared with a real `mutmut run`
+(`test_predicted_functions_match_what_mutmut_generates`):
+
+| Case | Mutated? | Engine reports |
+|---|---|---|
+| top-level function, `async def`, generator | yes | function |
+| method of a top-level class, including `__init__` | yes | `xǁClassǁmethod` |
+| nested function | inside its outermost function | the outer function |
+| lone bare `@staticmethod` / `@classmethod` | yes | function |
+| any other decorator (`@property`, `@lru_cache`, two decorators) | no | unmeasured, `decorated` |
+| module code, class attributes, class headers | no | unmeasured, `module_level` |
+| methods of a nested class, functions defined under a module-level `if` | no | unmeasured, `module_level` |
+| `__new__`, `__getattribute__`, `__setattr__`; an enum's `__init__` and `_generate_next_value_` | no | unmeasured, `no_mutants` |
+| a function with nothing mutable (`pass`, `return x`) | no | unmeasured, `no_mutants` |
+| a file libcst can't parse | no (mutmut copies it unmutated) | unmeasured, `no_mutants` |
+
+The last three can't be predicted from structure alone, so the engine asks mutmut's own
+generator (`mutate_file_contents`, through `_launch mutineer-functions`) which changed
+functions get mutants. A function with none is never passed to `mutmut run`.
+
+### mutmut 3.8.1 cache behaviour the spike didn't cover
+
+1. **A config change resets everything.** mutmut 3.8 fingerprints `pytest_add_cli_args`
+   and `pytest_add_cli_args_test_selection` in `mutmut-stats.json`. When they change, it
+   resets every cached result and recollects stats. The rule pass changes
+   `pytest_add_cli_args` (it adds `-m`), so the passes never share a cache.
+2. **Named mutants always rerun.** With mutant names or globs on the command line, every
+   matching mutant is tested again, cached result or not.
+3. **Stale test copies.** mutmut copies `tests/` into `mutants/tests/` with
+   `copytree(dirs_exist_ok=True)`, which adds and overwrites but never deletes. A test
+   deleted or renamed in the project keeps running from `mutants/tests/`. Seen in the
+   e2e tests: a deleted failing test kept the baseline failing.
+4. **Stale test map.** An incremental run only collects stats for new test ids. A test
+   whose body changed keeps its old function mapping.
+5. **Unmutated copies look mutated.** A source file outside `only_mutate` is copied with
+   `shutil.copy`, which gives it a new mtime. If a later run puts it in `only_mutate`,
+   mutmut sees `source mtime < copy mtime`, reports it as "1 unmodified", never mutates
+   it, and fails with `AssertionError: Filtered for specific mutants, but nothing
+   matches`.
+
+Because of 3 to 5, the engine deletes `mutants/` at the start of every `run` and
+`rerun`. Cost: the mutated files are regenerated (milliseconds) and stats are
+recollected (about one run of the test suite). Because of 1 and 2, little of the cache
+would have been reused anyway.
+
+### Messages and exit codes
+
+- `mutmut run` exits 0 when it finishes, even if mutants survive.
+- If tests record trampoline hits but none match a mutant's module path, mutmut stops
+  with `Stopping early, because tests recorded trampoline hits but none match any mutant
+  key`. This is a project setup problem (e.g. `pythonpath` makes tests import `foo`
+  instead of `pkg.foo`), so the engine raises `EngineError` with the output.
+- `FAILED: Unable to force test failures` is also an `EngineError`.
+- When no glob matches any mutant, mutmut fails with an `AssertionError` (`Filtered for
+  specific mutants, but nothing matches`). The engine never sends such a glob.
+- `mutmut show` for a method prints the method dedented, starting at its decorator if
+  it has one.

@@ -50,5 +50,4 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked
-      # Exit code 5 means no slow tests were collected yet (before WP3/WP4 land).
-      - run: uv run pytest -m slow || [ $? -eq 5 ]
+      - run: uv run pytest -m slow
