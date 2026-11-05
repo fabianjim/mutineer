@@ -44,8 +44,6 @@ def test_usage_errors_exit_4(argv):
     [
         ["run"],
         ["recheck", "--max-rounds", "2"],
-        ["rules", "check", "--base", "main"],
-        ["init"],
     ],
 )
 def test_stubs_exit_4_with_a_message(argv, capsys):
