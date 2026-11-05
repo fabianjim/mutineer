@@ -43,7 +43,6 @@ def test_usage_errors_exit_4(argv):
     "argv",
     [
         ["run"],
-        ["run", "--base", "main", "--format", "json", "--no-mutation", "--strict"],
         ["recheck", "--max-rounds", "2"],
         ["rules", "check", "--base", "main"],
         ["init"],

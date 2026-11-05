@@ -93,3 +93,27 @@ and `.agents` from ruff, so the bare commands are safe again. Keep those exclude
 - The human renamed the default branch from `master` to `main`, so the request above is
   done. CI's `main`-only triggers now apply.
 - `pyproject.toml` declares `license = "Apache-2.0"`. There is no `LICENSE` file yet.
+
+## 2026-11-05 · WP1 · tamper check landed; notes for WP4
+Details in `docs/impl/WP1.md`.
+- **Signature:** `checks.tamper.check(diff, root, rules=None, *, test_paths=("tests",))`.
+  `rules` (head `RulesFile`) is accepted but unused; pass `config.test_paths` (WP1's CLI
+  passes head plus base `test_paths`, see `cli/run.py:_test_paths`, so narrowing them in
+  the diff can't hide a test). Findings come sorted by file and line, with `id` empty.
+- **Static test key** is `file::Class::test` (`::`-joined, no brackets): WP4's
+  static/runtime agreement check only needs to strip parametrize brackets from node ids.
+  `testscan.scan_source(text, path)` returns `TestFunc`s with `.key` and `.rules`.
+- **`cli/run.py`:** `run --no-mutation` calls `tamper_only(root, base, output, strict)`,
+  which prints `{"status", "base", "head", "findings"}` and ignores `--format`. WP4
+  replaces it; a full `run` still raises "not implemented yet; pass --no-mutation".
+- **`special_case_suspected` is narrower than the spec** (deviation): a literal that
+  also appears in tracked non-test source outside the changed lines is not reported, and
+  findings are grouped per file and literal (`evidence.lines`). The literal rule gave 17
+  false-positive WARNs on WP1's own diff.
+- **`test_config_changed`** also fires on `[tool.mutineer]` and `[tool.mutmut]` changes
+  in `pyproject.toml`, and on any new or edited `conftest.py`. The dogfood run of WP1's
+  branch is `warn` because of `tests/unit/conftest.py` (requested in the WP1 brief) and
+  3 remaining special-case false positives.
+- **Touched a WP0 test:** removed the `run ... --no-mutation --strict` case from
+  `test_stubs_exit_4_with_a_message` in `tests/unit/test_cli.py`. WP2 may edit nearby
+  lines in that list (`rules check`, `init`); expect a trivial merge.
