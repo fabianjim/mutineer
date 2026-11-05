@@ -93,3 +93,37 @@ and `.agents` from ruff, so the bare commands are safe again. Keep those exclude
 - The human renamed the default branch from `master` to `main`, so the request above is
   done. CI's `main`-only triggers now apply.
 - `pyproject.toml` declares `license = "Apache-2.0"`. There is no `LICENSE` file yet.
+
+## 2026-11-05 · WP2 · rules API and rule map landed
+Affects WP3, WP4. Details in `docs/impl/WP2.md`.
+- **`rules.compare(base, head, *, rules_file=None)`:** the keyword-only `rules_file` is
+  additive and sets each finding's `location.file`. WP4: pass `config.rules_file`.
+  Deleting an id raises `RulesError` ("retire SHIP-003 instead of deleting it"); `base`
+  None means every head rule is `added`. Evidence: `change`, `before`, `after`.
+- **`rules.rule_findings`:** one finding per rule id, in catalogue order;
+  `evidence["tests"]` lists the marked node ids.
+- **`rules.collect_rule_map(root, config)`:**
+  - passes `[tool.mutmut]` `pytest_add_cli_args_test_selection` (+ deprecated
+    `tests_dir`) **and** `pytest_add_cli_args`, after `--rootdir=.`, exactly as mutmut's
+    own collection does, so node ids match;
+  - reads `pyproject.toml` only; mutmut's `setup.cfg [mutmut]` fallback isn't read;
+  - loads the plugin with `-p mutineer` (entry-point name), so it needs mutineer
+    installed in the project's environment.
+- **Plugin:** records the map in a `tryfirst` `pytest_collection_modifyitems`, before
+  `-m`/`-k` deselection. WP3: the rule pass still filters with `-m rule`, which is
+  unaffected (the plugin changes nothing without `--mutineer-rulemap`).
+
+## 2026-11-05 · WP2 · edited WP0's `tests/unit/test_cli.py`
+Removed `["rules", "check", "--base", "main"]` and `["init"]` from
+`test_stubs_exit_4_with_a_message`, because they're implemented now. WP1 (adding
+`run --no-mutation`) will probably edit the same parametrize list; the merger should
+keep both removals.
+
+## 2026-11-05 · WP2 · first slow e2e test exists
+Added `tests/e2e/test_rulemap_matches_mutmut.py` (marked `slow`), which runs
+`python -m mutmut run` on a clone of the fixture. `tests/e2e/` is WP3/WP4's
+directory; this file is WP2's and has a unique basename. WP0's request to drop the
+`|| [ $? -eq 5 ]` guard in the CI e2e job can now be done (ci.yml is WP0's; human or
+WP4).
+- WP2's test fixtures (`shop_clone`, `run_git`) live in
+  `tests/unit/rules/conftest.py`, not `tests/conftest.py`.
