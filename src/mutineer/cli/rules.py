@@ -1,4 +1,4 @@
-"""``mutineer rules ...`` (WP2)."""
+"""``mutineer rules ...``: commands for the rules file."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""The ``mutineer`` command line. Each command lives in its own module, owned per the build spec."""
+"""The ``mutineer`` command line. Each command lives in its own module."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ app.command(name="init")(init.init)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Console-script entry point. Returns the process exit code (build spec section 5)."""
+    """Console-script entry point. Returns the process exit code."""
     args = sys.argv[1:] if argv is None else list(argv)
     if not args:
         args = ["--help"]
@@ -61,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         typer.echo("Aborted.", err=True)
         return USAGE_ERROR_EXIT
     except TyperException as exc:
-        # click's UsageError, BadParameter, NoSuchOption, ... (vendored inside typer).
+        # click's UsageError, BadParameter, NoSuchOption, ... (vendored inside typer)
         show = getattr(exc, "show", None)
         if callable(show):
             show()

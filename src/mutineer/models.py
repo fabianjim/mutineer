@@ -1,8 +1,8 @@
-"""Shared contracts (build spec section 5).
+"""Shared data models: rules, the diff, engine results, findings and the verdict.
 
-Every package builds on these. Changes are additive only: a new optional field, a new
-enum member or a new model, logged in ``docs/handoff.md`` in the same commit.
-Nothing here may be renamed, removed or retyped.
+``Verdict`` is published as ``docs/schema/verdict.schema.json``. Change these models
+additively only (a new optional field, enum member or model); never rename, remove or
+retype anything.
 """
 
 from __future__ import annotations
@@ -148,7 +148,7 @@ class EngineRun(_Model):
     functions: list[FunctionRef]
     """Changed, mutable functions."""
     unmeasured: list[UnmeasuredLocation]
-    """Changed lines mutmut cannot mutate (build spec section 3 item 5)."""
+    """Changed lines mutmut cannot mutate, with the reason. Left out of every score."""
     unreached: list[str] = []
     """Function names with no covering tests."""
     results: list[MutantResult]
@@ -165,7 +165,7 @@ class Finding(_Model):
     """Assigned by ``verdict.decide``: ``"<check>-<nnnn>"``. Producers leave it empty."""
     check: Literal["tamper", "rules", "mutation"]
     kind: str
-    """Stable kind string from the finding catalogue (build spec section 7)."""
+    """Stable kind string, such as ``survivor_rule`` or ``rule_test_weakened``."""
     severity: Severity
     audience: Audience
     rules: list[str] = []
@@ -179,7 +179,8 @@ class Finding(_Model):
 class Score(_Model):
     killed: int
     total: int
-    """Per build spec section 3 item 9."""
+    """Killed, survived and no-tests mutants. Inconclusive ones (timeout, suspicious,
+    skipped, ...) count in neither ``killed`` nor ``total``."""
 
 
 class Verdict(_Model):

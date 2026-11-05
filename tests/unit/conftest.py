@@ -1,8 +1,8 @@
-"""WP1 fixtures: a two-commit repo for tamper tests.
+"""Fixtures for tamper tests: a two-commit repo
 
 ``tamper_repo.base({...})`` commits files on ``main`` and branches to ``work``;
 ``tamper_repo.head({...})`` writes (or, with ``None``, deletes) files in the worktree
-and returns the tamper findings for the diff.
+  and returns the tamper findings for the diff
 """
 
 from __future__ import annotations

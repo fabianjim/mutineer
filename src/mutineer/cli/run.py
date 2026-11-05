@@ -1,4 +1,4 @@
-"""``mutineer run``. WP0 stub; WP1 adds ``--no-mutation``; WP4 owns it from step 3."""
+"""``mutineer run``: judge the diff from the merge-base to the working tree."""
 
 from __future__ import annotations
 
@@ -42,10 +42,7 @@ def run(
 
 
 def tamper_only(root: Path, base: str | None, output: Path | None, strict: bool) -> int:
-    """WP1's ``--no-mutation``: tamper findings as plain JSON, whatever ``--format`` says.
-
-    WP4 replaces the rendering and adds the rules findings.
-    """
+    """``run --no-mutation``: tamper findings as plain JSON, whatever ``--format`` says."""
     config = load_config(root)
     diff = load_diff(root, base or config.base, config.rules_file)
     rules = _head_rules(root, config)

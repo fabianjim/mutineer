@@ -1,4 +1,4 @@
-"""The diff Mutineer judges: merge-base to the working tree (build spec section 3 item 1).
+"""The diff Mutineer judges: merge-base to the working tree.
 
 Paths are relative to ``root`` (``git diff --relative``), so a project in a subdirectory
 of a larger repository sees only its own files, with paths relative to itself.
@@ -20,7 +20,7 @@ from mutineer.models import ChangedFile, Diff, Hunk, Rule
 
 HEAD_WORKTREE = "WORKTREE"
 
-# Paths Mutineer itself writes; never part of the change being judged.
+# paths Mutineer itself writes; never part of the change being judged
 _OWN_OUTPUT_DIRS = ("mutants/",)
 _OWN_OUTPUT_FILES = (".mutineer/last-run.json",)
 
@@ -143,7 +143,7 @@ def _parse_hunks(lines: list[str]) -> list[Hunk]:
         start = int(m.group(1))
         length = 1 if m.group(2) is None else int(m.group(2))
         if length == 0:
-            # Pure deletion: git reports the line before the deletion point.
+            # pure deletion: git reports the line before the deletion point
             hunks.append(Hunk(start=start + 1, length=0))
         else:
             hunks.append(Hunk(start=start, length=length))

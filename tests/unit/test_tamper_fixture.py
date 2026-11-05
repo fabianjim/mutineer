@@ -1,4 +1,4 @@
-"""WP1 acceptance on the spike fixture (build spec section 8, WP1)."""
+"""Tamper detection on the shop fixture's branches"""
 
 from __future__ import annotations
 

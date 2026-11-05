@@ -1,4 +1,4 @@
-"""Tiered tamper detection (build spec section 8, WP1).
+"""Tiered tamper detection.
 
 Compares each test at base (``git show``) and at head (the file on disk), keyed by
 ``file::qualname``, and judges by tier:
@@ -36,7 +36,7 @@ from mutineer.testscan import (
     scan_source,
 )
 
-# Detection names, in precedence order (section 7: one finding per test, first that applies).
+# detection names, in precedence order: each test gets one finding, for the first that applies
 DELETED = "deleted"
 MARKER_REMOVED = "marker_removed"
 SKIPPED = "skipped"
@@ -105,7 +105,6 @@ class Detection:
     """One tamper detection on one test."""
 
     name: str
-    """A precedence name: deleted, marker_removed, skipped, weakened, expected_changed."""
     detail: str
     """What exactly changed, e.g. ``operator_changed``."""
     location: Location
@@ -209,7 +208,7 @@ def _detect(
             if not moved:
                 yield _deleted(b), b
                 continue
-            # The test moved. Check it took its markers along.
+            # the test moved -> check it took its markers along
             h = max(moved, key=lambda t: len(set(t.rules) & set(b.rules)))
             if set(b.rules) - set(h.rules):
                 yield _marker_removed(b, h), b
@@ -541,7 +540,7 @@ def _pytest_section(name: str, text: str | None) -> object:
         tool = tomllib.loads(text).get("tool", {})
     except tomllib.TOMLDecodeError:
         return text
-    # [tool.mutineer] decides which tests are scanned; [tool.mutmut] which tests run.
+    # [tool.mutineer] decides which tests are scanned; [tool.mutmut] which tests run
     return {k: tool.get(k) for k in ("pytest", "mutineer", "mutmut")}
 
 
@@ -595,18 +594,7 @@ def _eq_defs(tree: ast.Module) -> list[tuple[str, int]]:
             if isinstance(node, ast.ClassDef):
                 qual = f"{prefix}{node.name}"
                 for item in node.body:
-                    if (
-                        isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                        and item.name == "__eq__"
-                    ) or (
-                        isinstance(item, (ast.Assign, ast.AnnAssign))
-                        and any(
-                            isinstance(t, ast.Name) and t.id == "__eq__"
-                            for t in (
-                                item.targets if isinstance(item, ast.Assign) else [item.target]
-                            )
-                        )
-                    ):
+                    if _defines_eq(item):
                         out.append((qual, item.lineno))
                 walk(node.body, f"{qual}.")
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

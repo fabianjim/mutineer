@@ -1,4 +1,4 @@
-"""Either-tier tamper checks: test config, __eq__, special-casing, pinning (WP1)."""
+"""Either-tier tamper checks: test config, __eq__, special-casing, pinning"""
 
 from __future__ import annotations
 
@@ -167,7 +167,7 @@ def test_changed_compare_to_a_test_literal_warns(tamper_repo):
 
 
 def test_unchanged_compare_to_a_test_literal_is_fine(tamper_repo):
-    # `code == "basic"` exists at base and "basic" is in a test; only line 9 changes.
+    # `code == "basic"` exists at base and "basic" is in a test; only line 9 changes
     tamper_repo.base({SRC: PRICING, TEST: PRICING_TEST})
     assert tamper_repo.head({SRC: PRICING.replace("return 20", "return 21")}) == []
 
@@ -250,7 +250,7 @@ def test_pinning_rule_test_carries_its_rules(tamper_repo):
 
 def test_literal_already_used_elsewhere_in_source_is_a_domain_value(tamper_repo):
     # "vip-gold-37" is already a known value in the code base, so comparing to it in
-    # changed code is not special-casing a test input.
+    # changed code is not special-casing a test input
     known = 'TIERS = ("vip-gold-37",)\n'
     tamper_repo.base({SRC: PRICING, TEST: PRICING_TEST, "src/shop/tiers.py": known})
     head = PRICING.replace(

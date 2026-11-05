@@ -1,7 +1,8 @@
-"""Static test analysis (build spec section 8, WP1): which tests exist, which are rule tests.
+"""Static test analysis: which tests exist, which are rule tests.
 
-This is the *static* source of rule-test identity (section 3 item 8). It reads source
-text only, so it works on the base version from git without running anything.
+This is the *static* source of rule-test identity, used for tamper detection. It reads
+source text only, so it works on the base version from git without running anything.
+Triage uses the runtime identity instead: the pytest plugin's rule map.
 
 A test is a ``test_*`` function, or a ``test_*`` method of a ``Test*`` class (nested
 classes too), in a ``test_*.py`` / ``*_test.py`` file under one of the test paths. Tests
@@ -452,7 +453,6 @@ class _BodyScanner(_Base):
         self.pins: list[Located] = []
         self._assert_depth = 0
 
-    # assert statements
     def visit_Assert(self, node: cst.Assert) -> None:
         self._assert_depth += 1
         test = node.test
@@ -469,7 +469,6 @@ class _BodyScanner(_Base):
     def leave_Assert(self, original_node: cst.Assert) -> None:
         self._assert_depth -= 1
 
-    # calls: assert*, raises, skip
     def visit_Call(self, node: cst.Call) -> None:
         dotted = _dotted(node.func)
         name = self.ctx.canonical(dotted)
@@ -489,7 +488,6 @@ class _BodyScanner(_Base):
         if name in _SKIP_CALLS or last == "skipTest":
             self.skip_calls.append(self.located(node))
 
-    # pins
     def visit_Attribute(self, node: cst.Attribute) -> None:
         attr = node.attr.value
         if attr in _MOCK_ATTRS or attr.startswith(_MOCK_PREFIXES):

@@ -1,6 +1,6 @@
-# Mutineer's own promises (build spec section 6).
-# Tests that prove a rule carry @pytest.mark.rule("<ID>"). Never delete a rule:
-# retire it with status = "retired".
+# mutineer's own promises
+# tests that prove a rule carry @pytest.mark.rule("<ID>"); never delete a rule,
+# retire it with status = "retired"
 version = 1
 
 [[rule]]

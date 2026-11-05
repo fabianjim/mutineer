@@ -1,4 +1,6 @@
-"""Shared test fixtures (WP0). Later packages may add fixtures in their own conftest files.
+"""Shared test fixtures
+
+Test subdirectories keep their own fixtures in their own conftest.py
 
 - ``shop_repo``: the spike's toy repo, built once per session from
   ``tests/fixtures/make_fixture.sh``. Call ``shop_repo.checkout("agent")`` before use;

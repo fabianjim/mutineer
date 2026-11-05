@@ -1,4 +1,4 @@
-"""One test per tamper detection, for both tiers (build spec section 8, WP1)."""
+"""One test per tamper detection for both tiers"""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def _line_of(text: str, needle: str) -> int:
     return next(i for i, line in enumerate(text.splitlines(), 1) if needle in line)
 
 
-# Each case: (old, new, kind, change detail, test name, head line needle)
+# each case: (old, new, kind, change detail, test name, head line needle)
 CASES = {
     "assertion_removed": (
         "    assert quote(10) == 5\n    assert quote(20) == 5",

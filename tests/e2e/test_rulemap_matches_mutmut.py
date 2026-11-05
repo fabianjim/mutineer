@@ -1,4 +1,4 @@
-"""WP2 acceptance: runtime rule identity matches the node ids mutmut records (slow)."""
+"""Runtime rule identity matches the node ids mutmut records (slow)"""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def test_rule_map_node_ids_equal_mutmut_stats_for_quote(_shop_repo_session, tmp_
         "tests/rules/test_shipping_rules.py::test_well_over_threshold_ships_free",
     ]
     assert set(rule_map) <= covering
-    # main: the rule tests are exactly quote's covering tests; agent-gap adds one impl test.
+    # main: the rule tests are exactly quote's covering tests; agent-gap adds one impl test
     assert covering - set(rule_map) == (
         set() if branch == "main" else {"tests/test_express.py::test_express_adds_fee"}
     )

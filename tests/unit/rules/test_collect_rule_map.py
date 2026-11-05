@@ -1,4 +1,4 @@
-"""``rules.collect_rule_map``: runtime rule identity, as mutmut will see it."""
+"""``rules.collect_rule_map``: runtime rule identity, as mutmut will see it"""
 
 from __future__ import annotations
 
@@ -45,7 +45,8 @@ def test_copies_under_mutants_are_ignored(shop_clone):
 
 def test_collection_leaves_the_worktree_untouched(shop_clone):
     root = shop_clone("main")
-    # Without __pycache__/ ignored, any bytecode written would show up.
+
+    # without __pycache__/ ignored any bytecode written would show up
     (root / ".gitignore").write_text("mutants/\n")
     subprocess.run(["git", "commit", "-qam", "x"], cwd=root, check=True, capture_output=True)
     before = subprocess.run(
@@ -136,7 +137,7 @@ def test_mutmut_extra_pytest_args_are_passed(tmp_path):
             """,
         },
     )
-    # Collection fails if the -p plugin can't load, so success shows the args were passed.
+    # collection fails if the -p plugin can't load, so success shows the args were passed
     assert collect_rule_map(root, Config()) == {"test_a.py::test_a": ["A-001"]}
 
 

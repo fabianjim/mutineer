@@ -1,6 +1,6 @@
 """The rules file (``.mutineer/rules.toml``) and the runtime rule map.
 
-- ``load_rules``: parse and validate a rules file (WP0).
+- ``load_rules``: parse and validate a rules file.
 - ``compare``: rules-file changes from base to head; deleting an id is an error.
 - ``collect_rule_map``: which tests carry which rule ids, as pytest (and so mutmut)
   sees them.
@@ -33,7 +33,7 @@ def load_rules(text: str) -> RulesFile:
     except tomllib.TOMLDecodeError as exc:
         raise RulesError(f"rules file is not valid TOML ({exc}); fix the syntax") from exc
     if "rules" in data:
-        # RulesFile accepts `rules` by field name (for Python and JSON); TOML must say [[rule]].
+        # `RulesFile` accepts `rules` by field name (for Python and JSON); TOML must say [[rule]]
         raise RulesError("rules file: unknown key 'rules'; write each rule as a [[rule]] table")
     try:
         rules_file = RulesFile.model_validate(data)
@@ -237,8 +237,8 @@ def collect_rule_map(root: Path, config: Config) -> RuleMap:
             "--ignore=mutants",
             "-p",
             "no:cacheprovider",
-            # The entry-point name: loads the plugin even with PYTEST_DISABLE_PLUGIN_AUTOLOAD,
-            # and is a no-op when it is already autoloaded.
+            # the entry-point name: loads the plugin even with PYTEST_DISABLE_PLUGIN_AUTOLOAD
+            # and is a no-op when it is already autoloaded
             "-p",
             "mutineer",
             f"--mutineer-rulemap={out_path}",
@@ -248,7 +248,7 @@ def collect_rule_map(root: Path, config: Config) -> RuleMap:
         proc = subprocess.run(
             cmd, cwd=root, env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL
         )
-        # 5: nothing collected (or everything deselected); the map is still written.
+        # 5: nothing collected (or everything deselected); the map is still written
         if proc.returncode not in (0, 5):
             raise RulesError(_collection_failure(proc))
         if not out_path.is_file():
@@ -272,7 +272,7 @@ def _mutmut_pytest_args(root: Path) -> tuple[list[str], list[str]]:
     table = data.get("tool", {}).get("mutmut", {})
     if not isinstance(table, dict):
         raise ConfigError("[tool.mutmut] in pyproject.toml must be a table")
-    # mutmut appends the deprecated `tests_dir` to the test selection.
+    # mutmut appends the deprecated `tests_dir` to the test selection
     selection = _str_list(table, "pytest_add_cli_args_test_selection") + _str_list(
         table, "tests_dir"
     )

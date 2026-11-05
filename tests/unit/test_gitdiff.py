@@ -15,9 +15,6 @@ def by_path(files: list[ChangedFile]) -> dict[str, ChangedFile]:
     return {f.path: f for f in files}
 
 
-# ---- the shop fixture ----
-
-
 def test_agent_branch_against_main(shop_repo):
     shop_repo.checkout("agent")
     diff = load_diff(shop_repo.path, "main", RULES)
@@ -55,7 +52,7 @@ def test_main_against_itself_is_empty(shop_repo):
 
 
 def test_diff_runs_from_merge_base_not_base_tip(shop_repo):
-    # main moves on after `agent` branched: its new commit must not show up.
+    # main moves on after `agent` branched: its new commit must not show up
     shop_repo.checkout("main")
     shop_repo.write("src/shop/later.py", "X = 1\n")
     shop_repo.commit("later on main")
@@ -136,10 +133,10 @@ def test_rename_with_edit_staged_not_committed(base_repo):
 
 
 def test_pure_deletion_hunk_points_after_deletion(base_repo):
-    # Delete lines 2-3 ("two", "three"): head file is one/four/five.
+    # delete lines 2-3 ("two", "three") so head file is one/four/five
     base_repo.write("a.py", "one\nfour\nfive\n")
     files = by_path(load_diff(base_repo.path, "main", RULES).files)
-    # git reports "+1,0" (the line before); the contract wants the line after: 2 ("four").
+    # git reports "+1,0" (the line before); the contract wants the line after: 2 ("four")
     assert files["a.py"].hunks == [Hunk(start=2, length=0)]
 
 
@@ -154,7 +151,7 @@ def test_mixed_hunks_in_order(base_repo):
     files = by_path(load_diff(base_repo.path, "main", RULES).files)
     assert files["a.py"].hunks == [
         Hunk(start=1, length=1),  # "zero" inserted
-        Hunk(start=4, length=0),  # "three" deleted; "four" is now line 4
+        Hunk(start=4, length=0),  # "three" deleted, "four" is now line 4
         Hunk(start=5, length=2),  # "five" -> "FIVE", "six" added
     ]
 

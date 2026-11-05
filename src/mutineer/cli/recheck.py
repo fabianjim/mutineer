@@ -1,4 +1,4 @@
-"""``mutineer recheck``. WP0 stub; WP4 owns it."""
+"""``mutineer recheck``: rerun only the agent's surviving mutants from the last run."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""The pytest plugin's ``--mutineer-rulemap`` option, run in-process with pytester."""
+"""The pytest plugin's ``--mutineer-rulemap`` option, run in-process with pytester"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""``rules.compare`` and ``rules.rule_findings``."""
+"""``rules.compare`` and ``rules.rule_findings``"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""``mutineer init`` (WP2). Writes only files that are missing; never overwrites."""
+"""``mutineer init``. Writes only files that are missing; never overwrites."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ version = 1
 # seam = "shop.shipping.quote"
 """
 
-# Each entry, with the spellings that already cover it.
+# each entry, with the spellings that already cover it
 _GITIGNORE_ENTRIES: dict[str, set[str]] = {
     "mutants/": {"mutants", "mutants/", "/mutants", "/mutants/"},
     ".mutineer/last-run.json": {

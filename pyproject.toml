@@ -1,7 +1,7 @@
 [project]
 name = "mutineer"
 dynamic = ["version"]
-description = "Checks whether agent-written work is really done: diff-scoped mutation testing, rules and tamper detection."
+description = "Checks whether agent-written work is really done with diff-scoped mutation testing, rules and tamper detection."
 requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
@@ -43,7 +43,7 @@ max_rounds = 3
 
 [tool.mutmut]
 source_paths = ["src/mutineer"]
-# Unit tests only: the e2e tests build fixture repos and run mutmut themselves.
+# unit tests only: the e2e tests build fixture repos and run mutmut themselves
 pytest_add_cli_args_test_selection = ["tests/unit"]
 
 # ---- tooling ----
@@ -58,16 +58,16 @@ markers = [
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
-# Read-only reference material; ruff also formats Python blocks inside Markdown.
+# read-only reference material; ruff also formats Python blocks inside Markdown
 extend-exclude = ["spike", "docs", ".agents"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
-# mutmut's method separator is U+01C1 (ǁ), which looks like a pipe on purpose.
+# mutmut's method separator is U+01C1 (ǁ), which looks like a pipe on purpose
 allowed-confusables = ["ǁ"]
 
 [tool.ruff.lint.flake8-bugbear]
-# typer declares options as call defaults.
+# typer declares options as call defaults
 extend-immutable-calls = ["typer.Option", "typer.Argument"]
 
 [tool.mypy]

@@ -1,4 +1,4 @@
-"""``mutineer rules check`` and ``mutineer init``, through the CLI entry point."""
+"""``mutineer rules check`` and ``mutineer init`` through the CLI entry point"""
 
 from __future__ import annotations
 

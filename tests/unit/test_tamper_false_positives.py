@@ -1,4 +1,4 @@
-"""False-positive guard (build spec section 8, WP1): none of these gives a finding above INFO."""
+"""False-positive guard: none of these gives a finding above INFO"""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ ADDED_ASSERTION = BASE.replace(
     "assert quote(10) == 5\n", "assert quote(10) == 5\n    assert quote(49) == 5\n"
 )
 
-# What `ruff format` (and similar tools) do: quotes, spacing, line breaks, trailing commas.
+# what `ruff format` (and similar tools) do: quotes, spacing, line breaks, trailing commas
 REFORMATTED = """import pytest
 from shop import quote
 

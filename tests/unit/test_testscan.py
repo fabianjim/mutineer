@@ -1,4 +1,4 @@
-"""Static rule-test identity (build spec section 8, WP1: testscan)."""
+"""Static rule-test identity (testscan)"""
 
 from __future__ import annotations
 

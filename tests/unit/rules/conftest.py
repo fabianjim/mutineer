@@ -1,4 +1,4 @@
-"""WP2 fixtures: a private clone of the shop fixture."""
+"""Fixtures for rules tests: a private clone of the shop fixture"""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def git(cwd: Path, *args: str) -> str:
 
 @pytest.fixture
 def shop_clone(_shop_repo_session: Path, tmp_path: Path) -> Callable[[str], Path]:
-    """Clone the session's shop fixture and check out a branch. Safe to mutate."""
+    """Clone the session's shop fixture and check out a branch, safe to mutate"""
 
     def make(branch: str = "main") -> Path:
         dest = tmp_path / f"shop-{branch}"
@@ -45,5 +45,5 @@ def shop_clone(_shop_repo_session: Path, tmp_path: Path) -> Callable[[str], Path
 
 @pytest.fixture
 def run_git() -> Callable[..., str]:
-    """``run_git(cwd, *args)``: git with the developer's config ignored."""
+    """``run_git(cwd, *args)``: git with the developer's config ignored"""
     return git
