@@ -138,7 +138,12 @@ class MutantResult(_Model):
 
 
 class UnmeasuredLocation(Location):
-    reason: Literal["decorated", "module_level", "outside_source_paths", "excluded_by_config"]
+    reason: Literal[
+        "decorated", "module_level", "outside_source_paths", "excluded_by_config", "no_mutants"
+    ]
+    """``no_mutants`` (added by WP3): a changed function mutmut generates no mutants for,
+    such as one with nothing mutable in it, ``__new__``/``__setattr__``/``__getattribute__``,
+    an enum's ``__init__``/``_generate_next_value_``, or a ``# pragma: no mutate``."""
 
 
 class EngineRun(_Model):
