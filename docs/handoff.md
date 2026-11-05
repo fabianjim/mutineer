@@ -42,3 +42,54 @@ Deviation from the PRD: the PRD's `--max-rounds` is kept as a `recheck` option
   python.org still supports.
 - `.agents/` holds only `AGENTS.md` and `CLAUDE.md` (which contains only `@AGENTS.md`).
   Build documents stay in `docs/`, spike scripts in `spike/`.
+
+## 2026-11-05 · WP0 · contracts landed, with small additive extras
+Affects WP1–WP4. Details in `docs/impl/WP0.md`.
+- **Models:**
+  - Every model is frozen (`_Model` base). Use `model_copy(update=...)` to change one.
+  - `Rule.id` enforces `RULE_ID_PATTERN` in the model.
+  - `RulesFile` also accepts `rules=` by name, so JSON round trips work. TOML must
+    still say `[[rule]]`; `load_rules` rejects a top-level `rules` key.
+  - New, additive: `models.verdict_json_schema()`.
+- **`load_rules`** also rejects duplicate rule ids.
+- **`gitdiff` public helpers beyond `load_diff`:**
+  - `resolve_base_ref(root, base)`;
+  - `merge_base(root, base)` (WP4: use it for recheck's "base moved");
+  - `read_base_file(root, sha, path)` (WP1: base versions of tests);
+  - `HEAD_WORKTREE`.
+- **`gitdiff` paths are relative to `root`** (`git diff --relative`). Anything under
+  `mutants/`, and `.mutineer/last-run.json`, is never in a `Diff`.
+- **CLI:**
+  - `main()` returns the exit code. Commands should **return** their exit code (or
+    raise `typer.Exit(code)`).
+  - `MutineerError` maps to its `exit_code`, and usage errors map to 4.
+  - typer 0.27 vendors click: catch `typer.exceptions.TyperException`, not `click.*`.
+  - `OutputFormat` lives in `cli/run.py`.
+- **Tests:** `tests/conftest.py` provides `shop_repo` and `git_repo`.
+  - `shop_repo` is the fixture repo, built once per session. Call
+    `shop_repo.checkout("<branch>")` first; it resets and cleans the worktree.
+  - `git_repo` is an empty repo on `main`, with `.write()`, `.commit()` and `.git()`.
+  - Both ignore the developer's global git config.
+  - WP3 and WP4 e2e tests can build on them. Mutating `shop_repo` beyond a checkout
+    must be undone; see `test_diff_runs_from_merge_base_not_base_tip`.
+
+## 2026-11-05 · WP0 · warning: `ruff format` rewrites Markdown code blocks
+Affects everyone. This ruff version formats Python code blocks inside `.md` files.
+During WP0 a bare `uv run ruff format` rewrote the contract blocks in
+`docs/build-spec.md` and the two spike scripts. They were restored and are
+byte-identical to the `initial` commit. `pyproject.toml` now excludes `spike`, `docs`
+and `.agents` from ruff, so the bare commands are safe again. Keep those excludes.
+
+## 2026-11-05 · WP0 · requests for later packages
+- WP4 (README owner): add `readme = "README.md"` to `[project]` in `pyproject.toml`
+  when the README lands. WP0 left it out because hatchling fails on a missing readme.
+- WP3/WP4: once slow e2e tests exist, drop the `|| [ $? -eq 5 ]` guard in the CI e2e
+  job.
+- Human: the repo's default branch is `master` (the `initial` commit), but the spec and
+  CI assume `main`. CI's e2e job and `push` trigger only fire on `main`. Rename the
+  branch or adjust `ci.yml`.
+
+## 2026-11-05 · WP0 · resolved: branch is `main`, license is Apache-2.0
+- The human renamed the default branch from `master` to `main`, so the request above is
+  done. CI's `main`-only triggers now apply.
+- `pyproject.toml` declares `license = "Apache-2.0"`. There is no `LICENSE` file yet.

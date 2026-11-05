@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Mutineer and mutmut (also written by `mutineer init` in user projects)
+mutants/
+.mutineer/last-run.json

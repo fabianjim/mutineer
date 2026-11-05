@@ -1,0 +1,221 @@
+{
+  "$defs": {
+    "Audience": {
+      "enum": [
+        "agent",
+        "human"
+      ],
+      "title": "Audience",
+      "type": "string"
+    },
+    "Finding": {
+      "properties": {
+        "audience": {
+          "$ref": "#/$defs/Audience"
+        },
+        "check": {
+          "enum": [
+            "tamper",
+            "rules",
+            "mutation"
+          ],
+          "title": "Check",
+          "type": "string"
+        },
+        "evidence": {
+          "additionalProperties": true,
+          "default": {},
+          "title": "Evidence",
+          "type": "object"
+        },
+        "id": {
+          "default": "",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Location"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "next_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next Action"
+        },
+        "rules": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Rules",
+          "type": "array"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        }
+      },
+      "required": [
+        "check",
+        "kind",
+        "severity",
+        "audience",
+        "message"
+      ],
+      "title": "Finding",
+      "type": "object"
+    },
+    "Location": {
+      "properties": {
+        "end_line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Line"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        }
+      },
+      "required": [
+        "file"
+      ],
+      "title": "Location",
+      "type": "object"
+    },
+    "Score": {
+      "properties": {
+        "killed": {
+          "title": "Killed",
+          "type": "integer"
+        },
+        "total": {
+          "title": "Total",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "killed",
+        "total"
+      ],
+      "title": "Score",
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "block",
+        "warn",
+        "info"
+      ],
+      "title": "Severity",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "base": {
+      "title": "Base",
+      "type": "string"
+    },
+    "diff_score": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Score"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "duration_s": {
+      "title": "Duration S",
+      "type": "number"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "head": {
+      "title": "Head",
+      "type": "string"
+    },
+    "rule_score": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Score"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema_version": {
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "warn",
+        "block"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "status",
+    "base",
+    "head",
+    "rule_score",
+    "diff_score",
+    "findings",
+    "duration_s"
+  ],
+  "title": "Verdict",
+  "type": "object"
+}

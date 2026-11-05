@@ -1,0 +1,81 @@
+[project]
+name = "mutineer"
+dynamic = ["version"]
+description = "Checks whether agent-written work is really done: diff-scoped mutation testing, rules and tamper detection."
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+    "mutmut>=3.8,<3.9",
+    "pytest>=8",
+    "libcst>=1.1",
+    "pydantic>=2.6",
+    "typer>=0.12",
+    "rich>=13",
+]
+
+[project.scripts]
+mutineer = "mutineer.cli:main"
+
+[project.entry-points.pytest11]
+mutineer = "mutineer.pytest_plugin"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.10",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/mutineer/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mutineer"]
+
+# ---- Mutineer on itself (dogfooding) ----
+[tool.mutineer]
+rules_file = ".mutineer/rules.toml"
+test_paths = ["tests"]
+max_rounds = 3
+
+[tool.mutmut]
+source_paths = ["src/mutineer"]
+# Unit tests only: the e2e tests build fixture repos and run mutmut themselves.
+pytest_add_cli_args_test_selection = ["tests/unit"]
+
+# ---- tooling ----
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "-ra"]
+markers = [
+    "slow: end-to-end tests that build fixture repos and run mutmut",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+# Read-only reference material; ruff also formats Python blocks inside Markdown.
+extend-exclude = ["spike", "docs", ".agents"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+# mutmut's method separator is U+01C1 (ǁ), which looks like a pipe on purpose.
+allowed-confusables = ["ǁ"]
+
+[tool.ruff.lint.flake8-bugbear]
+# typer declares options as call defaults.
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["mutmut", "mutmut.*"]
+ignore_missing_imports = true

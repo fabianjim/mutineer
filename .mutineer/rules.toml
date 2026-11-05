@@ -1,0 +1,44 @@
+# Mutineer's own promises (build spec section 6).
+# Tests that prove a rule carry @pytest.mark.rule("<ID>"). Never delete a rule:
+# retire it with status = "retired".
+version = 1
+
+[[rule]]
+id = "VERDICT-001"
+statement = "Weakening, skipping, unmarking or deleting a rule test without changing that rule in rules.toml yields BLOCK"
+seam = "mutineer.checks.tamper.check"
+
+[[rule]]
+id = "VERDICT-002"
+statement = "A failing baseline test suite yields BLOCK, whether or not any function changed"
+seam = "mutineer.verdict.decide"
+
+[[rule]]
+id = "VERDICT-003"
+statement = "INFO findings never change the verdict status"
+seam = "mutineer.verdict.decide"
+
+[[rule]]
+id = "TRIAGE-001"
+statement = "Only mutants that no test catches, in functions a rule test covers, are sent to the agent"
+seam = "mutineer.triage.triage"
+
+[[rule]]
+id = "TRIAGE-002"
+statement = "Changed code mutmut cannot mutate is reported as unmeasured and excluded from scores"
+seam = "mutineer.triage.triage"
+
+[[rule]]
+id = "RULES-001"
+statement = "A rule id is never deleted from rules.toml; retiring keeps it in the file"
+seam = "mutineer.rules.compare"
+
+[[rule]]
+id = "ENGINE-001"
+statement = "`run` and `recheck` without `--output` never write outside `mutants/` and `.mutineer/`"
+seam = "mutineer.engine.mutmut_engine.MutmutEngine.run"
+
+[[rule]]
+id = "ENGINE-002"
+statement = "Only mutants requested in the current run are reported"
+seam = "mutineer.engine.mutmut_engine.MutmutEngine.run"
