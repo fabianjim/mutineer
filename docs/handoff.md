@@ -217,3 +217,44 @@ tested. This deviates from section 8 step 3 ("there are no results"). Affects WP
 special case needed. `no_tests` mutants of `unreached` functions are counted like any
 others (section 3 item 9), and `diff_score` is `None` only when mutation didn't run.
 Question 2 (`-m` in `addopts`) is still open.
+
+## 2026-11-05 · human · decided: the rule pass selects rule tests with a plugin option, not `-m`
+Answers question 2 of "WP3 · questions for the human / WP4". WP4 does this.
+- **Problem:** pytest keeps only the last `-m`, so the rule pass's `-m` silently replaces
+  a `-m` in the project's pytest `addopts`. Tests the project excludes then run in the
+  rule pass but not the all pass, and show up as `mutant_inconclusive`.
+- **Decision:** the pytest plugin gets an option, `--mutineer-rule-only`, that deselects
+  every test without a `rule` marker (reported through `pytest_deselected`, like `-m`).
+  The rule pass passes `-p mutineer --mutineer-rule-only` instead of building a `-m`.
+  The user's `-m`, from `addopts` or `[tool.mutmut] pytest_add_cli_args`, is never
+  touched.
+  - `-p mutineer` makes it work with `PYTEST_DISABLE_PLUGIN_AUTOLOAD`. It's a no-op
+    when the plugin is already loaded, as in `collect_rule_map`.
+  - The rule map must still be recorded before any deselection.
+- **Ownership:** WP4 may edit `pytest_plugin.py` (WP2's) and
+  `engine/mutmut_engine.py` (WP3's) for this, and the tests that cover them.
+  `rule_pass_args` and its `-m` combining go away. The unit test of that function and
+  the e2e test of a project `-m "not slow"` change accordingly; neither is a rule test.
+- **Spec deviation:** build spec section 3 item 3 and the WP3 acceptance line about
+  `-m "(not slow) and rule"` are superseded. The behaviour they protect stays: a project's
+  `-m "not slow"` still keeps a slow rule test out of the rule pass. Add an e2e test for
+  `-m` in pytest `addopts` too.
+
+## 2026-11-05 · human · for WP5: false positives to investigate
+Seen while merging WP1–WP3. WP5 should reproduce each one, judge how often it would
+fire on real changes, and recommend a fix (WP5 fixes nothing itself).
+1. **`test_config_changed` on docstring- or comment-only edits.** Any edit to a
+   `conftest.py` warns, including a module docstring change. Seen on the comment cleanup
+   commit (three `conftest.py` docstrings) and on every new `conftest.py` WP1–WP3 added.
+   Question: should edits that leave the AST unchanged (docstrings, comments) be
+   ignored, and are new `conftest.py` files that only add fixtures worth a WARN?
+2. **`special_case_suspected` when the value's definition is edited in the same diff.**
+   The check skips literals already known from source *outside the changed lines*. WP3
+   edited the `UnmeasuredLocation.reason` line in `models.py`, so `"decorated"` stopped
+   counting as known, and `engine/functions.py` got a WARN for comparing to it. Also
+   flagged: `"__mutmut_"` in `mutmut_engine.py`, mutmut's name marker. Question: should
+   values from `Literal[...]` annotations, enums or module constants count as known
+   even when their line changed?
+3. **`pins_implementation` on `_launch`.** WP3's unit tests import the private module
+   `engine/_launch.py`, which the spec itself makes private. INFO only; check whether
+   tests of a private module's own behaviour should count as pinning.
