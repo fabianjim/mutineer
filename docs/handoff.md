@@ -148,3 +148,14 @@ Both are recorded in `docs/spike-mutmut.md`.
    `addopts` (e.g. `-m "not slow"`) runs in the rule pass but not the all pass. That can
    show up as `mutant_inconclusive`. Reading `addopts` from every pytest config file is
    doable, but it isn't in the spec.
+
+## 2026-11-05 · WP3 · resolved: untested changes always count in `diff_score`
+Answers question 1 of "WP3 · questions for the human / WP4". The human decided that
+untested mutants always count. When mutmut stops early because no changed function has a
+test, `MutmutEngine.run` now reports every generated mutant as `no_tests` (`run="all"`,
+with `line`/`original`/`mutated`), and every function is still in `unreached`. So an
+untested change always lowers `diff_score`, whether or not another changed function is
+tested. This deviates from section 8 step 3 ("there are no results"). Affects WP4: no
+special case needed. `no_tests` mutants of `unreached` functions are counted like any
+others (section 3 item 9), and `diff_score` is `None` only when mutation didn't run.
+Question 2 (`-m` in `addopts`) is still open.

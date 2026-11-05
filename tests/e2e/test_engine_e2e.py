@@ -190,7 +190,13 @@ def test_untested_new_module_is_unreached(
     run = engine.run(diff_of(root), ship_rule_map, root)
     assert not run.baseline_failed
     assert run.unreached == ["shop.extra.x_bonus", "shop.extra.xǁCouponǁapply"]
-    assert run.results == []
+    # mutmut stops early (no changed function has a test), but the mutants still count
+    # as no_tests, so untested code lowers diff_score.
+    assert run.results
+    assert all(r.run == "all" and r.status == N for r in run.results)
+    assert {r.function for r in run.results} == set(run.unreached)
+    assert all(r.line is not None and r.mutated is not None for r in run.results)
+    assert (2, "if total > 1001:") in {(r.line, r.mutated) for r in run.results}
 
 
 def test_untested_module_next_to_tested_change(

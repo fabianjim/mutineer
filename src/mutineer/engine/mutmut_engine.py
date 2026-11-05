@@ -182,7 +182,18 @@ class MutmutEngine:
         if all_pass.kind == "baseline_failed":
             return finish(baseline_failed=True, baseline_output=all_pass.output)
         if all_pass.kind == "no_tests":
-            return finish(baseline_failed=False, unreached=[f.mutmut_name for f in functions])
+            # No changed function has a test. Report every generated mutant as no_tests,
+            # as mutmut does when only some functions are untested, so untested code always
+            # lowers diff_score (section 3 item 9). No rule pass: nothing is rule-covered.
+            untested = [
+                r.model_copy(update={"status": MutantStatus.NO_TESTS})
+                for r in _results(all_pass.exit_codes, functions, "all")
+            ]
+            return finish(
+                baseline_failed=False,
+                unreached=[f.mutmut_name for f in functions],
+                results=self._with_details(root, untested, functions),
+            )
 
         tests_by_function = all_pass.tests_by_function
         unreached = [f.mutmut_name for f in functions if not tests_by_function.get(f.mutmut_name)]
@@ -376,7 +387,9 @@ class MutmutEngine:
             if any(m in output for m in _BASELINE_FAILED):
                 return _Pass("baseline_failed", tail)
             if _NO_TESTS_AT_ALL in output:
-                return _Pass("no_tests", tail)
+                # mutmut wrote the generated mutants (untested, exit code None) before
+                # it stopped, so the names are known.
+                return _Pass("no_tests", tail, exit_codes=_read_exit_codes(root, files))
             raise EngineError(f"mutmut run failed (exit {proc.returncode}):\n{tail}")
         return _Pass(
             "ok",

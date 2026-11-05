@@ -42,8 +42,9 @@ the slow e2e tests.
 6. **All pass:** `only_mutate` = the changed files, one glob per function
    (`<name>__mutmut_*`), the project's own `pytest_add_cli_args`. The baseline-failure
    messages give `baseline_failed=True` and the output tail; `Stopping early, because we
-   could not find any test case` puts every function in `unreached` with no results; any
-   other non-zero exit is `EngineError`. Then the `.meta` exit codes for the requested
+   could not find any test case` puts every function in `unreached` and reports each of
+   their generated mutants as `no_tests` (no rule pass); any other non-zero exit is
+   `EngineError`. Then the `.meta` exit codes for the requested
    functions' mutants and `mutmut-stats.json` are read straight away.
 7. **Rule pass:** functions whose covering tests include a test with a non-empty entry in
    `rule_map`. `mutmut-stats.json` is deleted first, and `pytest_add_cli_args` gets the
@@ -108,21 +109,20 @@ requested names are reported; a name mutmut no longer generates is `not_checked`
   inside the function is used, else `line` is `None`.
 - **`rerun` globs** instead of exact names (above).
 - **`no_mutants`** reason (above).
+- **Stop-early results** (step 3 of `MutmutEngine.run`): the spec says no results when
+  mutmut stops early. The engine reports every generated mutant as `no_tests` instead, so
+  an untested change always lowers `diff_score` (section 3 item 9), whether or not another
+  changed function is tested. Decided by the human; see the handoff entry.
 - **Launcher commands:** besides `run` and `show`, `_launch` has `mutineer-config` and
   `mutineer-functions`, and `show` takes several names. The call shape
   `_launch '<json overrides>' <args>` is unchanged.
 
 ## Known limits
 
-**Open questions for WP4** (both in `docs/handoff.md`, "WP3 · questions for the human /
-WP4"; decide them before building triage and scores):
+**Open question for WP4** (in `docs/handoff.md`, "WP3 · questions for the human / WP4";
+decide it before building triage). The `diff_score` question there is resolved: untested
+mutants always count (see Deviations).
 
-- **`diff_score` and untested-only changes.** If *no* changed function has a test, mutmut
-  stops early: every function is `unreached` and there are no results, so `diff_score`
-  has nothing to count. If *some* are tested, the untested functions' mutants come back
-  `no_tests` and do lower `diff_score`. Section 3 item 9 says an untested new function
-  always lowers it. The engine follows section 8 as written; WP4 decides whether
-  `unreached` functions should count against `diff_score` in the first case.
 - A `-m` in the project's pytest `addopts` (not in `[tool.mutmut] pytest_add_cli_args`) is
   overridden by the rule pass's `-m`, because pytest keeps the last one. Handoff question.
 - `mutate_only_covered_lines = true` in the project's mutmut config isn't accounted for in
