@@ -134,6 +134,7 @@ def main(argv: list[str]) -> None:
         _print_functions(args)
         return
 
+    _forget_mutineer()
     from mutmut.__main__ import cli  # imported after the override on purpose
 
     if command == "show":
@@ -148,6 +149,20 @@ def main(argv: list[str]) -> None:
 
     sys.argv = ["mutmut", *argv[1:]]
     cli()
+
+
+def _forget_mutineer() -> None:
+    """Drop Mutineer's own modules before mutmut runs any test.
+
+    ``python -m mutineer.engine._launch`` imports the ``mutineer`` package from where it is
+    installed. mutmut puts ``mutants/src`` first on ``sys.path`` for the tests, but a module
+    already in ``sys.modules`` is never imported again, so when the project under test is
+    Mutineer itself its tests would run the original code and never reach a mutant. For any
+    other project this changes nothing: the launcher uses no Mutineer module after this.
+    """
+    for name in list(sys.modules):
+        if name == "mutineer" or name.startswith("mutineer."):
+            del sys.modules[name]
 
 
 if __name__ == "__main__":
