@@ -48,7 +48,13 @@ def test_collection_leaves_the_worktree_untouched(shop_clone):
 
     # without __pycache__/ ignored any bytecode written would show up
     (root / ".gitignore").write_text("mutants/\n")
-    subprocess.run(["git", "commit", "-qam", "x"], cwd=root, check=True, capture_output=True)
+    # explicit identity: CI runners have no global git config
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qam", "x"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
     before = subprocess.run(
         ["git", "status", "--porcelain", "--ignored"], cwd=root, capture_output=True, text=True
     ).stdout
