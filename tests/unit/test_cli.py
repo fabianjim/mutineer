@@ -39,18 +39,6 @@ def test_usage_errors_exit_4(argv):
     assert main(argv) == 4
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["run"],
-        ["recheck", "--max-rounds", "2"],
-    ],
-)
-def test_stubs_exit_4_with_a_message(argv, capsys):
-    assert main(argv) == 4
-    assert "not implemented yet" in capsys.readouterr().err
-
-
 def test_error_exit_codes():
     assert MutineerError.exit_code == 4
     for cls in (ConfigError, RulesError, EngineError):
