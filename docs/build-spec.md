@@ -87,11 +87,13 @@ or from review of an earlier draft.
 3. **Two mutation passes:**
    - *all pass*: every mutant in changed functions, against all tests.
    - *rule pass*: only the mutants of rule-covered functions, with only rule tests.
-   The rule pass filters with `-m`:
-   - If the project's `pytest_add_cli_args` already contains `-m EXPR`, replace it with
-     `-m "(EXPR) and rule"`.
-   - Otherwise add `-m rule`.
-   pytest keeps only the last `-m`, so appending would silently drop the user's filter.
+   The rule pass selects rule tests with the plugin option `--mutineer-rule-only`: it
+   appends `-p mutineer --mutineer-rule-only` to the project's `pytest_add_cli_args`. The
+   option deselects every test without a rule id (reported through `pytest_deselected`,
+   as `-m` does). The project's own `-m`, in pytest `addopts` or in
+   `pytest_add_cli_args`, is never touched: pytest keeps only the last `-m`, so adding
+   another would silently drop it. *(Decided by the human during WP3/WP4; replaces an
+   earlier `-m "(EXPR) and rule"` rewrite.)*
 4. **Triage by mutant status in each pass.**
    - Status groups:
      - **K** = killed or caught by type check
@@ -120,7 +122,10 @@ or from review of an earlier draft.
    - module-level and class-body lines outside functions (`"module_level"`);
    - changed `.py` files outside mutmut's `source_paths` that aren't under the test
      paths (`"outside_source_paths"`);
-   - files matched by the user's `do_not_mutate` (`"excluded_by_config"`).
+   - files matched by the user's `do_not_mutate` (`"excluded_by_config"`);
+   - changed functions mutmut generates no mutants for: nothing mutable, names mutmut
+     never mutates (`__new__`, `__setattr__`, …), `# pragma: no mutate`, or a file libcst
+     can't parse (`"no_mutants"`, added by WP3).
 
    Blank lines, comment-only lines and docstrings are ignored.
 6. **Read only what we asked for, right after we asked.**
@@ -128,10 +133,19 @@ or from review of an earlier draft.
    - Read the `.meta` files and `mutmut-stats.json` right after each pass, because the
      next pass overwrites both.
    - Never use `mutmut results`.
+   - Delete `mutants/` at the start of every engine `run` and `rerun`: mutmut's cache
+     gives wrong answers across branches and passes (`docs/spike-mutmut.md`). A user's own
+     mutmut results there are lost, and the README says so.
 7. **Never call mutmut with an empty scope.** An empty `only_mutate` means "mutate
    everything". If there are no changed functions, skip mutmut and run the baseline
    suite directly with pytest (section 2 flags plus the project's test-selection
    args), so a broken suite still blocks.
+
+   A suite pytest can't collect (a syntax or import error in a test module or a
+   `conftest.py`, an unknown marker under `--strict-markers`) is a failing baseline too:
+   `run` and `recheck` report `baseline_failed` (BLOCK, exit 2) and skip mutation, also
+   under `--no-mutation`. `collect_rule_map` raises `CollectionError` for these, and plain
+   `RulesError` (exit 4) for setup problems such as a missing plugin or a bad option.
 8. **Rule-test identity has two sources, used for different jobs:**
    - *static* (libcst, WP1), for tamper detection, because it must read the base
      version without running it;
@@ -143,7 +157,8 @@ or from review of an earlier draft.
 9. **Scores.** Statuses are taken from the relevant pass. Group I counts in neither
    score.
    - `diff_score` = K ÷ (K + S + N) over the all pass, every changed function. An
-     untested new function lowers it; coverage can't hide it.
+     untested new function lowers it; coverage can't hide it. This holds even when no
+     changed function has any test (see WP3 step 3).
    - `rule_score` = K ÷ (K + S + N) over the rule pass, rule-covered functions.
 
 ## 4. Repository layout and ownership
@@ -267,7 +282,8 @@ class MutantResult(BaseModel):
     mutated: str | None = None
 
 class UnmeasuredLocation(Location):
-    reason: Literal["decorated", "module_level", "outside_source_paths", "excluded_by_config"]
+    reason: Literal["decorated", "module_level", "outside_source_paths", "excluded_by_config",
+                    "no_mutants"]           # no_mutants: added by WP3
 
 class EngineRun(BaseModel):
     baseline_failed: bool
@@ -314,6 +330,8 @@ class MutineerError(Exception):
     exit_code = 4                 # message must say what to fix, in one line
 class ConfigError(MutineerError): ...
 class RulesError(MutineerError): ...
+class CollectionError(RulesError):  # pytest can't collect the tests; run/recheck BLOCK
+    output: str                       # tail of pytest's output (added by WP4)
 class EngineError(MutineerError): ...
 class NeedsHumanError(MutineerError):
     exit_code = 3                 # recheck round cap reached
@@ -347,7 +365,7 @@ class Engine(Protocol):
 | 1 | warn, when `--strict` is set |
 | 2 | block |
 | 3 | `recheck` round cap reached; needs a human |
-| 4 | Mutineer could not run: any `MutineerError`, and CLI usage errors (typer is configured so that usage errors exit 4, not click's default 2) |
+| 4 | Mutineer could not run: any `MutineerError` except `CollectionError` (a broken suite blocks, section 3 item 7), and CLI usage errors (typer is configured so that usage errors exit 4, not click's default 2) |
 
 ### CLI (v0.1)
 
@@ -546,7 +564,10 @@ already work.
 - **Plugin:**
   - registers the `rule` marker, so `--strict-markers` passes;
   - `--mutineer-rulemap=PATH` writes the `RuleMap` JSON after collection;
-  - has no other behaviour and no overhead when the option is absent;
+  - `--mutineer-rule-only` deselects tests without a rule id, after the map is recorded
+    (the rule pass, section 3 item 3). An empty `@pytest.mark.rule()` carries no id, so it
+    is neither in the map nor kept;
+  - has no other behaviour and no overhead when neither option is given;
   - accepts several ids per marker, and stacked markers.
 - **`init`:** writes a commented `rules.toml` template and adds `mutants/` and
   `.mutineer/last-run.json` to `.gitignore` if they are missing. It never overwrites.
@@ -574,7 +595,8 @@ implementing `Engine`), and `engine/_launch.py`. Add the agent-gap results below
 - **`functions.py`:** given the diff, the head files, and mutmut's `source_paths` and
   `do_not_mutate`, return the changed `FunctionRef`s and the unmeasured locations with
   reasons, per section 3 item 5.
-  - Module name: the path relative to its `source_paths` entry, dotted.
+  - Module name: the file path relative to the project root, dotted, with a leading
+    `src.` removed and `.__init__` dropped (mutmut's own rule; corrected by WP3).
   - Function name: `<module>.x_<func>` or `<module>.xǁ<Class>ǁ<method>`.
   - A changed line in a nested function maps to its outermost function.
 - **Ground-truth test:** for a corpus file of tricky cases, the predicted function set
@@ -589,6 +611,9 @@ implementing `Engine`), and `engine/_launch.py`. Add the agent-gap results below
     version range.
   - Overrides used: `only_mutate` (never empty) and `pytest_add_cli_args`
     (the rule pass, section 3 item 3).
+  - Before handing over to mutmut, it drops `mutineer*` from `sys.modules`; otherwise a
+    run on Mutineer itself tests the installed code, not the mutated copy (found by
+    WP4's dogfood run).
 - **Status mapping:** map exit codes yourself; don't use mutmut's status strings.
 
   | Exit code | MutantStatus |
@@ -615,7 +640,8 @@ implementing `Engine`), and `engine/_launch.py`. Add the agent-gap results below
        `Failed to run clean test` means `baseline_failed=True`. Return with the output
        tail; nothing else runs.
      - `Stopping early, because we could not find any test case` means every requested
-       function goes to `unreached`; there are no results.
+       function goes to `unreached`, and every generated mutant is reported as
+       `no_tests`, so untested code still lowers `diff_score` (decided by the human).
      - Any other non-zero exit raises `EngineError` with the output tail.
   4. **Immediately read** `mutants/mutmut-stats.json` into `tests_by_function`, and the
      `.meta` exit codes for the requested names only. Functions without a stats entry
@@ -625,8 +651,10 @@ implementing `Engine`), and `engine/_launch.py`. Add the agent-gap results below
      Read their `.meta` immediately.
   6. **Mutant details:** for every result that isn't killed, run `mutmut show` through
      the launcher. Map the diff to a head file line:
-     - file line = `start_line` + (the hunk's old-side start − 1) + (the number of
-       context lines before the first `-` line);
+     - file line = anchor + (the hunk's old-side start − 1) + (the number of context
+       lines before the first `-` line), where the anchor is the first line of mutmut's
+       rendering of the function: a comment directly above it, else its decorator, else
+       the `def` line (corrected by WP3);
      - fill `original` and `mutated`.
   7. **Output:** capture subprocess output. Mutineer's own output shows no spinners.
 - **`MutmutEngine.rerun(names, rule_map, root)`:** the rule pass only, for those exact
@@ -653,8 +681,8 @@ implementing `Engine`), and `engine/_launch.py`. Add the agent-gap results below
   `EngineError`.
 - A changed `@property` body gives an unmeasured location with reason `decorated`, and
   no FunctionRef.
-- A project `pytest_add_cli_args = ["-m", "not slow"]` becomes
-  `-m "(not slow) and rule"` in the rule pass; a slow rule test does not run there.
+- A project `-m "not slow"`, in `pytest_add_cli_args` or in pytest `addopts`, keeps a
+  slow rule test out of the rule pass (section 3 item 3).
 - On a fixture copy whose `.gitignore` lacks `__pycache__/`, a run leaves
   `git status --porcelain --ignored` unchanged apart from `mutants/` and `.mutineer/`.
   Marked `rule("ENGINE-001")`.
@@ -737,7 +765,9 @@ entries).
 - Static and runtime rule identity agree on every fixture branch.
 - **Dogfood:**
   - `mutineer run` on WP4's own final PR (≤300 changed lines) completes in under
-    2 minutes;
+    2 minutes. *Deferred by the human: WP4's PR is about 1,300 lines and took 6.5
+    minutes; a 207-line slice took 80 s. Performance comes after v0.1 is complete
+    (`docs/dogfood.md`).*
   - `--no-mutation` and the full run are recorded in `docs/dogfood.md`.
 
 ### WP5 Independent review

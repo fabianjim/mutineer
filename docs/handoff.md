@@ -258,3 +258,123 @@ fire on real changes, and recommend a fix (WP5 fixes nothing itself).
 3. **`pins_implementation` on `_launch`.** WP3's unit tests import the private module
    `engine/_launch.py`, which the spec itself makes private. INFO only; check whether
    tests of a private module's own behaviour should count as pinning.
+
+## 2026-11-05 · WP4 · done: the rule pass selects with `--mutineer-rule-only`
+Implements "human · decided: the rule pass selects rule tests with a plugin option".
+- `pytest_plugin.py`: `--mutineer-rule-only` deselects every test with no rule id and
+  reports them through `pytest_deselected` (mutmut lists tests as collected minus
+  deselected). A test counts when it has at least one id, the same definition as the rule
+  map, so an empty `@pytest.mark.rule()` is deselected (`-m rule` used to keep it). The rule
+  map is still recorded first, in the same `tryfirst` hook.
+- `engine/mutmut_engine.py`: the rule pass (run and rerun) appends `RULE_PASS_ARGS`
+  (`-p mutineer --mutineer-rule-only`) to the project's `pytest_add_cli_args`.
+  `rule_pass_args` and its unit test are gone.
+- e2e: `test_rule_pass_keeps_the_projects_marker_filter` (`-m` in `[tool.mutmut]`) is kept,
+  and `test_rule_pass_keeps_a_marker_filter_from_pytest_addopts` is new.
+
+## 2026-11-05 · WP4 · fix in WP3's `_launch.py`: Mutineer couldn't mutation-test itself
+Found by the first full dogfood run. `python -m mutineer.engine._launch` imports the
+`mutineer` package from its installed location before mutmut runs the tests in-process.
+mutmut puts `mutants/src` first on `sys.path`, but a module already in `sys.modules` is
+never imported again, so Mutineer's own tests ran the original code, no mutant was ever
+hit, and every changed function came back `unreached` (diff score 0/1931). The launcher
+now drops `mutineer*` from `sys.modules` just before importing `mutmut.__main__`
+(`_forget_mutineer`). No effect on other projects. WP5: the slow e2e suite can't catch a
+regression here, because the fixture project isn't Mutineer; only the dogfood run does.
+
+## 2026-11-05 · WP4 · dogfood config: `also_copy` in `[tool.mutmut]`
+mutmut runs the tests from `mutants/`, which holds only the source, `tests/` and a few
+config files. `tests/unit/test_load_rules.py` and `tests/unit/test_models.py` read
+`.mutineer/rules.toml` and `docs/schema/` from the project root, so the baseline failed
+under mutmut. `pyproject.toml` (WP0's) now has `also_copy = [".mutineer", "docs/schema"]`.
+It gives a `test_config_changed` WARN on WP4's diff, as it should.
+
+## 2026-11-05 · WP4 · edited WP0's and WP1's CLI tests
+- `tests/unit/test_cli.py`: removed `test_stubs_exit_4_with_a_message`; `run` and
+  `recheck` are no longer stubs.
+- `tests/unit/test_tamper_fixture.py`: the `run --no-mutation` tests pass `--format json`
+  (the default is now the terminal report) and read the `Verdict` JSON, whose `status` and
+  `findings` keys match the old payload. Removed `test_cli_full_run_is_still_wp4s`. The
+  VERDICT-001 test's assertions are unchanged.
+
+## 2026-11-05 · WP4 · `run`, `recheck` and triage: decisions other packages see
+Details in `docs/impl/WP4.md`.
+- `run --no-mutation` now renders like a full run (`--format`, default terminal); the
+  `tamper_only` helper is gone. Both scores are `None`.
+- `.mutineer/last-run.json` is a `mutineer.state.State` (`version`, `base_ref`, `base`,
+  `rounds`, `survivor_names`, `engine_run`, `verdict`). `recheck` checks the merge-base of
+  the stored `base_ref`, so `--base` carries over.
+- Finding ids are numbered per check in output order (`tamper-0001`, `rules-0001`,
+  `mutation-0001`); output order is BLOCK, WARN, INFO, then tamper, rules, mutation.
+- An `unreached` function gets only the `unreached` finding, not also `survivor_unowned`;
+  its `no_tests` mutants still count in `diff_score`.
+- A failing baseline leaves both scores `None` and suppresses the per-mutant findings
+  (`unmeasured_change` is still reported).
+- A rule-covered mutant with no rule-pass result (and `not_checked` names from `rerun`) is
+  `mutant_inconclusive`.
+- A pytest collection error makes `collect_rule_map` raise, so `run` exits 4, not 2. The
+  suite is broken either way, and CI fails either way; WP5 may want it to be a BLOCK.
+
+## 2026-11-05 · WP4 · dogfood misses the 2-minute target on WP4's own diff
+The spec expects WP4's PR to be ≤300 changed lines; it is about 1,300 lines of source
+(triage, verdict, state, four reporters, both commands). The full run takes several
+minutes: see `docs/dogfood.md` for the numbers and the breakdown. Two costs dominate:
+mutmut runs the whole selected test suite three times per pass before any mutant (stats,
+clean run, forced fail: about 60 s for `tests/unit`), and then about 8 mutants per second
+on 10 cores. For WP5 and the human: options are a faster unit suite, a narrower
+`pytest_add_cli_args_test_selection` for dogfooding, or splitting large PRs.
+
+## 2026-11-05 · human · decided after WP4's first report
+- **A suite pytest can't collect blocks.** Resolves "A pytest collection error makes
+  `collect_rule_map` raise, so `run` exits 4" above. Done by WP4; see the next entry.
+- **An empty `@pytest.mark.rule()` doesn't make a test a rule test.** Fine as built.
+- **The 2-minute dogfood target is deferred.** Finish v0.1 first, performance after.
+  Recorded in `docs/build-spec.md` (WP4 acceptance) and `docs/dogfood.md`.
+- **No `LICENSE` file until the repo is published.** `pyproject.toml` keeps
+  `license = "Apache-2.0"`.
+- **Rule coverage that is too broad goes to WP5** (next entry but one).
+
+## 2026-11-05 · WP4 · contract: `CollectionError`; a broken suite is a BLOCK
+- Additive change to `errors.py`: `CollectionError(RulesError)` with an `output` attribute
+  (the tail of pytest's output).
+- `rules.collect_rule_map` (WP2's) raises it when pytest exits 1 or 2 during collection
+  (a syntax or import error in a test module, an unknown marker under
+  `--strict-markers`), or exits 4 with `ImportError while loading conftest`. pytest also
+  exits 4 for a bad option or a missing plugin, so that case is told apart by pytest's
+  message. Other failures stay `RulesError` (exit 4). Existing callers that catch
+  `RulesError` are unaffected.
+- `run` and `recheck` turn it into `baseline_failed` (BLOCK, exit 2,
+  `evidence.stage = "collection"`), also under `--no-mutation`. Mutation is skipped, and
+  so are the rule findings, because the rule map is unknown. Tamper detection still runs.
+  `recheck` keeps the stored survivors, so it retries them once the suite collects again.
+- `mutineer rules check` still exits 4 on any collection failure: it has no verdict.
+
+## 2026-11-05 · WP4 · for WP5: rule coverage is broader than the rules
+Seen on WP4's dogfood run (`docs/dogfood.md`). Coverage is per function, and a function
+is rule-covered when any rule test calls it, directly or not. The VERDICT-001 tests go
+through `cli.main(["run", ...])`, so `run`, `static_checks`, `emit` and `_test_paths`
+count as covered by VERDICT-001. A surviving mutant there (say, a dropped
+`encoding="utf-8"` in `emit`) becomes a `survivor_rule` telling the agent to "test
+VERDICT-001 through `mutineer.checks.tamper.check`", which is unrelated, and would push
+the agent to pin output details. This is the spec's triage table working as written; it
+only shows up in layered code, not on the fixture. 185 of WP4's findings were like this.
+WP5: judge how often this happens on real projects, and recommend a fix, for example:
+- send survivors to the agent only from functions in, or called directly by, the rule's
+  seam, and the rest to a human;
+- at least name the mutated function in `next_action` rather than the rule's seam.
+
+## 2026-11-05 · WP4 · cleanup after the first report
+- **`setup.cfg [mutmut]`:** `collect_rule_map` (WP2's) now reads mutmut's test selection
+  and pytest args the way mutmut does: `[tool.mutmut]` in `pyproject.toml` if the table
+  exists, else `setup.cfg [mutmut]` (one list item per line). Closes the known limit in
+  `docs/impl/WP2.md`, so the rule map and the engine can no longer disagree on such
+  projects.
+- **Launcher regression test:**
+  `tests/e2e/verdict/test_mutineer_on_itself_e2e.py` mutation-tests a copy of Mutineer's
+  own source. It fails with `_forget_mutineer` disabled (the changed function comes back
+  `unreached`), so the dogfood bug can't return unnoticed.
+- **Build spec updated** with every decision that overrode it: the rule pass's
+  `--mutineer-rule-only` (section 3 item 3 and the WP2/WP3 lines), the `no_mutants`
+  reason, wiping `mutants/`, collection errors as BLOCK (section 3 item 7, exit codes,
+  `errors.py`), untested-only changes in `diff_score`, module names, the line-mapping
+  anchor, the launcher's module purge, and the deferred dogfood target.
