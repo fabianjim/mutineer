@@ -1,4 +1,4 @@
-"""Engine helpers that don't need mutmut to run: status map, -m rewrite, line mapping."""
+"""Engine helpers that don't need mutmut to run: status map, line mapping."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from mutineer.engine.mutmut_engine import (
     locate,
     output_tail,
     render_anchors,
-    rule_pass_args,
     status_for_exit_code,
 )
 from mutineer.models import FunctionRef, MutantStatus
@@ -47,22 +46,6 @@ from mutineer.models import FunctionRef, MutantStatus
 )
 def test_status_for_exit_code(code: int | None, status: str) -> None:
     assert status_for_exit_code(code) == MutantStatus(status)
-
-
-@pytest.mark.parametrize(
-    ("args", "expected"),
-    [
-        ([], ["-m", "rule"]),
-        (["-x"], ["-x", "-m", "rule"]),
-        (["-m", "not slow"], ["-m", "(not slow) and rule"]),
-        (["-mnot slow", "-x"], ["-m", "(not slow) and rule", "-x"]),
-        (["-m", "a", "-m", "b"], ["-m", "a", "-m", "(b) and rule"]),
-        (["--maxfail", "1"], ["--maxfail", "1", "-m", "rule"]),
-    ],
-)
-def test_rule_pass_args_combines_marker_expressions(args: list[str], expected: list[str]) -> None:
-    assert rule_pass_args(args) == expected
-    assert rule_pass_args(tuple(args)) == expected
 
 
 def test_output_tail_strips_spinners_and_keeps_last_lines() -> None:

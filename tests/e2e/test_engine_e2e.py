@@ -281,7 +281,35 @@ def test_rule_pass_keeps_the_projects_marker_filter(
         )
     )
     run = engine.run(diff_of(root), rule_map, root)
-    # -m "(not slow) and rule": the slow rule test stays out, and so does the express test
+    # the project's -m keeps the slow rule test out; the rule pass keeps the express test out
+    assert threshold in survivors(run, "all")
+    assert threshold in survivors(run, "rule")
+    assert (12, "rate = EXPRESS_FEE") in survivors(run, "rule")
+    assert (12, "rate = EXPRESS_FEE") not in survivors(run, "all")
+
+
+def test_rule_pass_keeps_a_marker_filter_from_pytest_addopts(
+    shop_copy: Any, engine: MutmutEngine, ship_rule_map: RuleMap, diff_of: DiffOf
+) -> None:
+    shop_copy.checkout("agent-gap")
+    root = shop_copy.path
+    shop_copy.write("tests/rules/test_slow_rule.py", SLOW_RULE_TEST)
+    rule_map = {
+        **ship_rule_map,
+        "tests/rules/test_slow_rule.py::test_exactly_fifty_ships_free": ["SHIP-003"],
+    }
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text().replace(
+            "[tool.pytest.ini_options]\n",
+            "[tool.pytest.ini_options]\naddopts = \"-m 'not slow'\"\n",
+        )
+    )
+    assert "addopts" in pyproject.read_text()
+
+    run = engine.run(diff_of(root), rule_map, root)
+    threshold = (8, "if total > FREE_SHIPPING_MIN:")
+    # the slow rule test runs in neither pass, so the passes agree on the threshold mutant
     assert threshold in survivors(run, "all")
     assert threshold in survivors(run, "rule")
     assert (12, "rate = EXPRESS_FEE") in survivors(run, "rule")

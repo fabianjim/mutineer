@@ -76,28 +76,19 @@ _NO_TESTS_AT_ALL = "Stopping early, because we could not find any test case"
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _NOT_KILLED_EXEMPT = {MutantStatus.KILLED, MutantStatus.TYPE_CHECK}
 
+RULE_PASS_ARGS = ("-p", "mutineer", "--mutineer-rule-only")
+"""Appended to the project's ``pytest_add_cli_args`` in the rule pass.
+
+The plugin option deselects tests without a rule id. The project's own ``-m`` (in pytest
+``addopts`` or ``pytest_add_cli_args``) is left alone, because pytest keeps only the last
+``-m``. ``-p mutineer`` loads the plugin even with ``PYTEST_DISABLE_PLUGIN_AUTOLOAD`` set,
+and is a no-op when it is already loaded.
+"""
+
 
 def status_for_exit_code(code: int | None) -> MutantStatus:
     """Map a mutmut worker exit code to a status."""
     return _STATUS_BY_EXIT_CODE.get(code, MutantStatus.SUSPICIOUS)
-
-
-def rule_pass_args(args: Sequence[str]) -> list[str]:
-    """``pytest_add_cli_args`` for the rule pass.
-
-    pytest keeps only the last ``-m``, so an existing ``-m EXPR`` becomes
-    ``-m "(EXPR) and rule"`` instead of being overridden by an appended ``-m rule``.
-    """
-    out = list(args)
-    for i in range(len(out) - 1, -1, -1):
-        arg = out[i]
-        if arg == "-m" and i + 1 < len(out):
-            out[i + 1] = f"({out[i + 1]}) and rule"
-            return out
-        if arg.startswith("-m") and not arg.startswith("--") and len(arg) > 2:
-            out[i : i + 1] = ["-m", f"({arg[2:]}) and rule"]
-            return out
-    return [*out, "-m", "rule"]
 
 
 def output_tail(text: str, lines: int = TAIL_LINES) -> str:
@@ -208,7 +199,7 @@ class MutmutEngine:
         if rule_covered:
             rule_files = sorted({f.file for f in rule_covered})
             rule_pass = self._mutmut_run(
-                root, rule_files, rule_covered, rule_pass_args(cfg.pytest_add_cli_args)
+                root, rule_files, rule_covered, [*cfg.pytest_add_cli_args, *RULE_PASS_ARGS]
             )
             if rule_pass.kind == "baseline_failed":
                 baseline_failed, baseline_output = True, rule_pass.output
@@ -238,7 +229,7 @@ class MutmutEngine:
         exact name raises ``KeyError`` when its function has no stats entry), but only the
         requested names are reported. A name mutmut no longer generates (its function
         changed or vanished) is reported as ``not_checked``. ``rule_map`` is unused: the
-        rule pass selects rule tests with ``-m rule``.
+        rule pass selects rule tests with the plugin's ``--mutineer-rule-only``.
         """
         del rule_map
         started = time.monotonic()
@@ -290,7 +281,7 @@ class MutmutEngine:
 
         _wipe_mutants(root)
         rule_pass = self._mutmut_run(
-            root, sorted({r.file for r in refs}), refs, rule_pass_args(cfg.pytest_add_cli_args)
+            root, sorted({r.file for r in refs}), refs, [*cfg.pytest_add_cli_args, *RULE_PASS_ARGS]
         )
         if rule_pass.kind == "baseline_failed":
             return finish([], baseline_failed=True, baseline_output=rule_pass.output)
@@ -631,4 +622,4 @@ def _module_files(
     return out
 
 
-__all__ = ["MutmutEngine", "rule_pass_args", "status_for_exit_code"]
+__all__ = ["RULE_PASS_ARGS", "MutmutEngine", "status_for_exit_code"]
