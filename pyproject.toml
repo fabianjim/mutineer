@@ -2,6 +2,7 @@
 name = "mutineer"
 dynamic = ["version"]
 description = "Checks whether agent-written work is really done with diff-scoped mutation testing, rules and tamper detection."
+readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
@@ -45,6 +46,8 @@ max_rounds = 3
 source_paths = ["src/mutineer"]
 # unit tests only: the e2e tests build fixture repos and run mutmut themselves
 pytest_add_cli_args_test_selection = ["tests/unit"]
+# unit tests read these from the project root; mutmut runs them from mutants/
+also_copy = [".mutineer", "docs/schema"]
 
 # ---- tooling ----
 [tool.pytest.ini_options]

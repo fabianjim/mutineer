@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import subprocess
@@ -22,7 +23,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from mutineer.config import Config
-from mutineer.errors import ConfigError, RulesError
+from mutineer.errors import CollectionError, ConfigError, RulesError
 from mutineer.models import Audience, Finding, Location, Rule, RuleMap, RulesFile, Severity
 
 
@@ -219,7 +220,8 @@ def collect_rule_map(root: Path, config: Config) -> RuleMap:
     project's ``[tool.mutmut]`` ``pytest_add_cli_args_test_selection`` and
     ``pytest_add_cli_args``), so node ids match mutmut's ``tests_by_mangled_function_name``.
     Adds ``--ignore=mutants -p no:cacheprovider`` and ``PYTHONDONTWRITEBYTECODE=1``.
-    Raises ``RulesError`` if collection fails. ``config`` is accepted for the contract;
+    Raises ``CollectionError`` (a ``RulesError``) when the project's tests can't be
+    collected, and ``RulesError`` for other failures. ``config`` is accepted for the contract;
     test selection comes from mutmut's settings, not ``test_paths``.
     """
     del config  # see docstring
@@ -250,6 +252,8 @@ def collect_rule_map(root: Path, config: Config) -> RuleMap:
         )
         # 5: nothing collected (or everything deselected); the map is still written
         if proc.returncode not in (0, 5):
+            if _suite_is_broken(proc):
+                raise CollectionError(_collection_failure(proc), output=_output_tail(proc))
             raise RulesError(_collection_failure(proc))
         if not out_path.is_file():
             raise RulesError(
@@ -261,17 +265,14 @@ def collect_rule_map(root: Path, config: Config) -> RuleMap:
 
 
 def _mutmut_pytest_args(root: Path) -> tuple[list[str], list[str]]:
-    """``[tool.mutmut]`` test-selection and extra pytest args, read as mutmut reads them."""
-    path = root / "pyproject.toml"
-    if not path.is_file():
-        return [], []
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
-        raise ConfigError(f"pyproject.toml is not valid TOML ({exc}); fix the file") from exc
-    table = data.get("tool", {}).get("mutmut", {})
-    if not isinstance(table, dict):
-        raise ConfigError("[tool.mutmut] in pyproject.toml must be a table")
+    """``[tool.mutmut]`` test-selection and extra pytest args, read as mutmut reads them.
+
+    Like mutmut, a ``[tool.mutmut]`` table in ``pyproject.toml`` wins; without one, the
+    ``[mutmut]`` section of ``setup.cfg`` is read.
+    """
+    table = _pyproject_mutmut(root)
+    if table is None:
+        table = _setup_cfg_mutmut(root)
     # mutmut appends the deprecated `tests_dir` to the test selection
     selection = _str_list(table, "pytest_add_cli_args_test_selection") + _str_list(
         table, "tests_dir"
@@ -279,11 +280,62 @@ def _mutmut_pytest_args(root: Path) -> tuple[list[str], list[str]]:
     return selection, _str_list(table, "pytest_add_cli_args")
 
 
+def _pyproject_mutmut(root: Path) -> dict[str, Any] | None:
+    path = root / "pyproject.toml"
+    if not path.is_file():
+        return None
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"pyproject.toml is not valid TOML ({exc}); fix the file") from exc
+    tool = data.get("tool", {})
+    if not isinstance(tool, dict) or "mutmut" not in tool:
+        return None
+    table = tool["mutmut"]
+    if not isinstance(table, dict):
+        raise ConfigError("[tool.mutmut] in pyproject.toml must be a table")
+    return table
+
+
+def _setup_cfg_mutmut(root: Path) -> dict[str, Any]:
+    """``setup.cfg [mutmut]`` as lists: one item per line, as mutmut splits them."""
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(root / "setup.cfg", encoding="utf-8")
+    except configparser.Error as exc:
+        raise ConfigError(f"setup.cfg is not valid ({exc}); fix the file") from exc
+    if not parser.has_section("mutmut"):
+        return {}
+    return {
+        key: [line for line in value.split("\n") if line] for key, value in parser.items("mutmut")
+    }
+
+
 def _str_list(table: dict[str, Any], key: str) -> list[str]:
     value = table.get(key, [])
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise ConfigError(f"[tool.mutmut] {key} in pyproject.toml must be a list of strings")
     return value
+
+
+def _suite_is_broken(proc: subprocess.CompletedProcess[str]) -> bool:
+    """Whether pytest failed because of the project's tests, not Mutineer's setup.
+
+    Exit 1 or 2 is a collection error in a test module (syntax, import, unknown marker
+    under ``--strict-markers``). pytest also exits 4 for a ``conftest.py`` that fails to
+    import, the same code as a bad option or a missing plugin, so that case is told apart
+    by pytest's message.
+    """
+    if proc.returncode in (1, 2):
+        return True
+    return proc.returncode == 4 and "ImportError while loading conftest" in (
+        proc.stdout + proc.stderr
+    )
+
+
+def _output_tail(proc: subprocess.CompletedProcess[str]) -> str:
+    lines = [ln.rstrip() for ln in (proc.stdout + proc.stderr).splitlines() if ln.strip()]
+    return "\n".join(lines[-_OUTPUT_TAIL:])
 
 
 def _collection_failure(proc: subprocess.CompletedProcess[str]) -> str:

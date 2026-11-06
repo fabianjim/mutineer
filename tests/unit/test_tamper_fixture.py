@@ -63,7 +63,7 @@ def test_clean_branches_have_nothing_above_info(shop_repo, branch):
 def test_cli_no_mutation_blocks_on_agent_tamper(shop_repo, monkeypatch, capsys):
     shop_repo.checkout("agent-tamper")
     monkeypatch.chdir(shop_repo.path)
-    assert main(["run", "--no-mutation"]) == 2
+    assert main(["run", "--no-mutation", "--format", "json"]) == 2
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "block"
     assert [f["kind"] for f in out["findings"]] == ["rule_test_weakened"]
@@ -81,7 +81,7 @@ def test_cli_no_mutation_blocks_on_agent_tamper(shop_repo, monkeypatch, capsys):
 def test_cli_no_mutation_exit_codes(shop_repo, monkeypatch, capsys, branch, argv, code, status):
     shop_repo.checkout(branch)
     monkeypatch.chdir(shop_repo.path)
-    assert main(["run", "--no-mutation", *argv]) == code
+    assert main(["run", "--no-mutation", "--format", "json", *argv]) == code
     assert json.loads(capsys.readouterr().out)["status"] == status
 
 
@@ -89,16 +89,14 @@ def test_cli_no_mutation_writes_output_file(shop_repo, monkeypatch, capsys, tmp_
     shop_repo.checkout("agent-tamper")
     monkeypatch.chdir(shop_repo.path)
     target = tmp_path / "report.json"
-    assert main(["run", "--no-mutation", "--base", "main", "--output", str(target)]) == 2
+    assert (
+        main(
+            ["run", "--no-mutation", "--format", "json", "--base", "main", "--output", str(target)]
+        )
+        == 2
+    )
     assert capsys.readouterr().out == ""
     assert json.loads(target.read_text())["findings"][0]["severity"] == "block"
-
-
-def test_cli_full_run_is_still_wp4s(shop_repo, monkeypatch, capsys):
-    shop_repo.checkout("agent")
-    monkeypatch.chdir(shop_repo.path)
-    assert main(["run"]) == 4
-    assert "--no-mutation" in capsys.readouterr().err
 
 
 def test_cli_narrowed_test_paths_cannot_hide_a_rule_test(shop_repo, monkeypatch, capsys):
@@ -106,6 +104,6 @@ def test_cli_narrowed_test_paths_cannot_hide_a_rule_test(shop_repo, monkeypatch,
     pyproject = shop_repo.path / "pyproject.toml"
     pyproject.write_text(pyproject.read_text() + '\n[tool.mutineer]\ntest_paths = ["nowhere"]\n')
     monkeypatch.chdir(shop_repo.path)
-    assert main(["run", "--no-mutation"]) == 2
+    assert main(["run", "--no-mutation", "--format", "json"]) == 2
     kinds = {f["kind"] for f in json.loads(capsys.readouterr().out)["findings"]}
     assert kinds == {"rule_test_weakened", "test_config_changed"}

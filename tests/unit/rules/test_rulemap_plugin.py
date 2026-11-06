@@ -122,3 +122,83 @@ def test_without_the_option_nothing_is_written(pytester):
     result = pytester.runpytest("-p", "no:cacheprovider", "--strict-markers")
     result.assert_outcomes(passed=1)
     assert not list(pytester.path.rglob("*.json"))
+
+
+##
+# --mutineer-rule-only: the rule pass's test selection
+
+RULE_ONLY_TESTS = """
+import pytest
+
+@pytest.mark.rule("R-001")
+def test_rule():
+    pass
+
+@pytest.mark.slow
+@pytest.mark.rule("R-002")
+def test_slow_rule():
+    pass
+
+def test_impl():
+    pass
+
+@pytest.mark.rule()
+def test_empty_marker():
+    pass
+
+@pytest.mark.parametrize("x", [pytest.param(1, marks=pytest.mark.rule("R-003")), 2])
+def test_cases(x):
+    pass
+"""
+
+
+def test_rule_only_runs_just_the_tests_with_a_rule_id(pytester):
+    pytester.makepyfile(test_r=RULE_ONLY_TESTS)
+    result = pytester.runpytest("-p", "no:cacheprovider", "-v", "--mutineer-rule-only")
+    result.assert_outcomes(passed=3, deselected=3)
+    out = result.stdout.str()
+    for node in ("test_r.py::test_rule", "test_r.py::test_slow_rule", "test_r.py::test_cases[1]"):
+        assert f"{node} PASSED" in out
+    for node in ("test_impl", "test_empty_marker", "test_cases[2]"):
+        assert f"{node} PASSED" not in out
+
+
+def test_rule_only_keeps_the_projects_marker_filter(pytester):
+    pytester.makeini("[pytest]\naddopts = -m 'not slow'\n")
+    pytester.makepyfile(test_r=RULE_ONLY_TESTS)
+    result = pytester.runpytest("-p", "no:cacheprovider", "-v", "--mutineer-rule-only")
+    result.assert_outcomes(passed=2, deselected=4)
+    assert "test_slow_rule PASSED" not in result.stdout.str()
+
+
+def test_rule_only_reports_deselected_tests_to_other_plugins(pytester):
+    # mutmut lists tests as collected minus `pytest_deselected`, as for `-m`
+    pytester.makepyfile(test_r=RULE_ONLY_TESTS)
+    pytester.makeconftest(
+        """
+        seen = []
+
+        def pytest_deselected(items):
+            seen.extend(item.nodeid for item in items)
+
+        def pytest_collection_finish(session):
+            print("DESELECTED", sorted(seen))
+        """
+    )
+    result = pytester.runpytest("-p", "no:cacheprovider", "-s", "--mutineer-rule-only")
+    result.stdout.fnmatch_lines(
+        [
+            "DESELECTED ['test_r.py::test_cases[2]', 'test_r.py::test_empty_marker', "
+            "'test_r.py::test_impl']"
+        ]
+    )
+
+
+def test_rule_map_still_lists_rule_tests_the_rule_only_option_keeps(pytester):
+    pytester.makeini("[pytest]\naddopts = -m 'not slow'\n")
+    pytester.makepyfile(test_r=RULE_ONLY_TESTS)
+    assert _rule_map(pytester, "--mutineer-rule-only") == {
+        "test_r.py::test_rule": ["R-001"],
+        "test_r.py::test_slow_rule": ["R-002"],
+        "test_r.py::test_cases[1]": ["R-003"],
+    }
