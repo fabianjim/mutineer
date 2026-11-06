@@ -158,20 +158,22 @@ def _load_tests(
     """Tests in the changed test files, keyed by head ``file::qualname``.
 
     For a renamed file, base tests are keyed under the head path so they pair up.
-    A file that fails to parse on either side is skipped: pytest's own collection error
-    makes the baseline fail, which blocks on its own.
+    A file renamed out of collection has no head tests, so its head side is never parsed
+    and its base tests come out as deleted.
+    A file that fails to parse otherwise is skipped: pytest's own collection error makes
+    the baseline fail, which blocks on its own.
     """
     base: dict[str, TestFunc] = {}
     head: dict[str, TestFunc] = {}
     for cf in diff.files:
         base_path = cf.old_path or cf.path
-        base_is_test = cf.status != "added" and is_test_file(base_path, test_paths)
+        base_is_test = is_test_file(base_path, test_paths)
         head_is_test = cf.status != "deleted" and is_test_file(cf.path, test_paths)
         if not (base_is_test or head_is_test):
             continue
         try:
             before = _scan(read_base_file(root, diff.base, base_path), base_path)
-            after = _scan(_read_head(root, cf.path), cf.path)
+            after = _scan(_read_head(root, cf.path), cf.path) if head_is_test else []
         except SyntaxError:
             continue
         if base_is_test:

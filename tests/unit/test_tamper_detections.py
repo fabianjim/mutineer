@@ -256,6 +256,48 @@ def test_deleting_a_rule_test_file_blocks_every_test_in_it(tamper_repo):
     assert all(f.severity == Severity.BLOCK for f in findings)
 
 
+@pytest.mark.rule("VERDICT-001")
+def test_untracking_a_rule_test_file_blocks_though_it_stays_on_disk(tamper_repo):
+    # git reports the file deleted, but it is still on disk and pytest still runs it locally
+    tamper_repo.base({RULE_PATH: RULE_FILE})
+    tamper_repo.repo.git("rm", "-q", "--cached", RULE_PATH)
+    findings = tamper_repo.head({".gitignore": f"{RULE_PATH}\n"})
+    assert {f.kind for f in findings} == {"rule_test_deleted"}
+    assert len(findings) == 6
+    assert all(f.severity == Severity.BLOCK for f in findings)
+
+
+def _rename_and_break(tamper_repo, new_path: str):
+    tamper_repo.base({RULE_PATH: RULE_FILE})
+    (tamper_repo.path / new_path).parent.mkdir(parents=True, exist_ok=True)
+    tamper_repo.repo.git("mv", RULE_PATH, new_path)
+    return tamper_repo.head({new_path: RULE_FILE + "\ndef broken(:\n"})
+
+
+@pytest.mark.rule("VERDICT-001")
+@pytest.mark.parametrize("new_path", ["tests/rules_old.py", "old/rules.py"])
+def test_renaming_a_rule_test_file_out_of_collection_and_breaking_it_blocks(tamper_repo, new_path):
+    findings = _rename_and_break(tamper_repo, new_path)
+    assert {f.kind for f in findings} == {"rule_test_deleted"}
+    assert len(findings) == 6
+    assert all(f.severity == Severity.BLOCK for f in findings)
+
+
+def test_renaming_a_rule_test_file_to_a_test_name_and_breaking_it_is_skipped(tamper_repo):
+    # pytest still collects the file, so its collection error blocks the baseline
+    assert _rename_and_break(tamper_repo, "tests/test_rules_old.py") == []
+
+
+@pytest.mark.rule("VERDICT-001")
+def test_an_unparsable_test_file_does_not_hide_tampering_in_the_next_one(tamper_repo):
+    tamper_repo.base({"tests/test_a.py": RULE_FILE, RULE_PATH: RULE_FILE})
+    head = _edit(RULE_FILE, "def test_free():\n    total = 80\n    assert quote(total) == 0", "")
+    findings = tamper_repo.head(
+        {"tests/test_a.py": RULE_FILE + "\ndef broken(:\n", RULE_PATH: head}
+    )
+    assert [(f.kind, f.location.file) for f in findings] == [("rule_test_deleted", RULE_PATH)]
+
+
 def test_deleted_impl_test_is_info(tamper_repo):
     head = _edit(IMPL_FILE, "def test_free():\n    total = 80\n    assert quote(total) == 0", "")
     tamper_repo.base({IMPL_PATH: IMPL_FILE})
