@@ -62,7 +62,7 @@ line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
 # read-only reference material; ruff also formats Python blocks inside Markdown
-extend-exclude = ["spike", "docs", ".agents"]
+extend-exclude = ["docs", ".agents"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]

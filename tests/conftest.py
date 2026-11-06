@@ -2,7 +2,7 @@
 
 Test subdirectories keep their own fixtures in their own conftest.py
 
-- ``shop_repo``: the spike's toy repo, built once per session from
+- ``shop_repo``: the toy repo, built once per session from
   ``tests/fixtures/make_fixture.sh``. Call ``shop_repo.checkout("agent")`` before use;
   it resets the worktree, so tests must not rely on state left by another test.
 - ``git_repo``: an empty git repo in ``tmp_path`` with small helpers.

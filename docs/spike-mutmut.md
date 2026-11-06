@@ -1,9 +1,9 @@
 # Spike: building on mutmut 3.8.1
 
 Date: 2026-11-05. Environment: Python 3.13, pytest 9.2.0, mutmut 3.8.1, Linux.
-Reproduce: `spike/make_fixture.sh /tmp/shop` builds the toy repo used below
-(branches `main` and `agent`). `spike/mutmut_launcher.py` and
-`spike/rulemap_plugin.py` are the two helper scripts the spike ran.
+Reproduce: `tests/fixtures/make_fixture.sh /tmp/shop` builds the toy repo used below.
+The spike's two helper scripts became `src/mutineer/engine/_launch.py` (the launcher) and
+`src/mutineer/pytest_plugin.py` (the rule map).
 
 **Verdict: mutmut can carry Mutineer v0.1 without a fork.** Every assumption the
 PRD makes held, with the corrections listed under "What changes in the design".
@@ -14,7 +14,7 @@ PRD makes held, with the corrections listed under "What changes in the design".
 |---|---|---|
 | 1 | Can a run be limited to the diff's files? | Yes. `only_mutate = ["src/shop/pricing.py"]` → "1 files mutated, 2 ignored". |
 | 2 | Can a run be limited to changed functions? | Yes. `mutmut run "shop.pricing.x_discount__mutmut_*"` runs only those mutants (fnmatch globs). |
-| 3 | Can we set `only_mutate` without editing the user's `pyproject.toml`? | Yes, with a launcher that replaces mutmut's in-memory config before importing its CLI (`spike/mutmut_launcher.py`). Git status stays clean. |
+| 3 | Can we set `only_mutate` without editing the user's `pyproject.toml`? | Yes, with a launcher that replaces mutmut's in-memory config before importing its CLI (now `src/mutineer/engine/_launch.py`). Git status stays clean. |
 | 4 | Where are results? | `mutants/<source path>.meta` (JSON). `exit_code_by_key[mutant] = 0` survived, `1` killed, `None` not run. |
 | 5 | Which tests cover which code? | `mutants/mutmut-stats.json` → `tests_by_mangled_function_name`, e.g. `"shop.shipping.x_quote": ["tests/rules/test_shipping_rules.py::test_..."]`. Function-level, not line-level. |
 | 6 | Do rule-marker test ids match mutmut's? | Yes, exactly, when collection runs with `--ignore=mutants` (see trap 2). |

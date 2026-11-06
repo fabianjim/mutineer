@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Builds the spike's toy repo in a new directory with two commits:
+# Builds the toy repo in a new directory with two commits:
 #   base  - shipping (guarded by rule SHIP-003), pricing, cart
 #   agent - an "agent" change: discount() edited, loyalty_points() added
-# Usage: spike/make_fixture.sh /path/to/new/dir
+# Usage: tests/fixtures/make_fixture.sh /path/to/new/dir
 set -euo pipefail
 D="${1:?usage: make_fixture.sh DIR}"
 mkdir -p "$D" && cd "$D"

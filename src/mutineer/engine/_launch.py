@@ -9,7 +9,7 @@ Usage (always with the project root as the working directory)::
 
 ``run`` and ``show`` are mutmut's own commands. The overrides replace fields of mutmut's
 config dataclass with ``dataclasses.replace`` before ``mutmut.__main__`` is imported, so the
-user's ``pyproject.toml`` is never edited (``spike/mutmut_launcher.py``). ``show`` accepts
+user's ``pyproject.toml`` is never edited. ``show`` accepts
 several names and prints a ``RECORD_SEP`` + name line before each mutant's output.
 
 The two ``mutineer-*`` commands print one ``MARKER`` line holding JSON:
