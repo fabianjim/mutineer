@@ -36,6 +36,19 @@ path = "src/mutineer/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/mutineer"]
 
+# an allowlist, so nothing local or untracked ends up in the sdist
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "src",
+    "tests",
+    "scripts",
+    "docs/mutmut.md",
+    "docs/schema",
+    ".mutineer",
+    "README.md",
+    "LICENSE",
+]
+
 # ---- Mutineer on itself (dogfooding) ----
 [tool.mutineer]
 rules_file = ".mutineer/rules.toml"
