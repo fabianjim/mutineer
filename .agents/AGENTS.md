@@ -45,7 +45,7 @@ reasons for them:
 - **Changed code mutmut can't mutate is reported, never hidden** (`unmeasured_change`:
   decorated functions, module-level code, files outside `source_paths`, excluded files,
   functions with no mutants), and is left out of every score.
-- **mutmut, as verified for 3.8.1** (details in `docs/spike-mutmut.md`):
+- **mutmut, as verified for 3.8.1** (details in `docs/mutmut.md`):
   - never call it with an empty `only_mutate`: that means "mutate everything"; with no
     mutable changed function, run the baseline with pytest instead, so a broken suite
     still blocks;

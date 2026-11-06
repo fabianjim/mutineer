@@ -1,7 +1,7 @@
 """Map a diff to the functions mutmut will mutate, and to changed code it cannot mutate.
 
 Pure source analysis: this module reads head files and never runs or imports mutmut.
-What mutmut mutates (verified against mutmut 3.8.1, see ``docs/spike-mutmut.md``):
+What mutmut mutates (verified against mutmut 3.8.1, see ``docs/mutmut.md``):
 
 - top-level functions, and methods defined directly in a top-level class body;
 - not if decorated, except by a lone bare ``@staticmethod`` or ``@classmethod``;

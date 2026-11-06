@@ -7,9 +7,9 @@ Mutineer and its spinners never reach Mutineer's output.
 Invariants:
 
 - **Fresh ``mutants/``.** ``run`` and ``rerun`` delete ``mutants/`` first. mutmut's cache
-  keeps test copies, test-to-function maps and mutated files from earlier runs (traps 1
-  and 6 in ``docs/spike-mutmut.md``, plus stale ``mutants/tests`` copies), and both passes
-  invalidate most of it anyway. Mutineer writes nowhere else (ENGINE-001).
+  keeps test copies, test-to-function maps and mutated files from earlier runs (see "The
+  cache" in ``docs/mutmut.md``), and both passes invalidate most of it anyway. Mutineer
+  writes nowhere else (ENGINE-001).
 - **Read only what was asked, right after asking** (ENGINE-002): results come from the
   ``.meta`` keys of the functions requested in that call, read before the next call.
 - **Never an empty scope**: no mutable changed function means no mutmut call.
