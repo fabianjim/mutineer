@@ -25,7 +25,7 @@ Mutineer's pytest plugin import your code.
 uv add --dev mutineer        # or: pip install mutineer
 ```
 
-Python 3.11 or newer. mutmut doesn't run on native Windows; use WSL.
+Python 3.11 or newer. mutmut doesn't run on native Windows and requires WSL.
 
 ## Set up
 
