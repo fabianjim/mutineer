@@ -50,7 +50,10 @@ reasons for them:
     mutable changed function, run the baseline with pytest instead, so a broken suite
     still blocks;
   - delete `mutants/` before every mutmut run: its cache gives wrong answers across
-    branches and passes;
+    branches and passes. Deleted or renamed tests keep running from `mutants/tests/`,
+    a test whose body changed keeps its old test map, and a file copied unmutated earlier
+    fails a later run with `nothing matches`. The two passes use different pytest args,
+    which resets the cache anyway, and mutants requested by name always rerun;
   - read `.meta` exit codes and `mutmut-stats.json` right after each pass (the next pass
     overwrites them), only for the names requested; never use `mutmut results`;
   - map exit codes to statuses yourself; use per-function globs, because an exact name
