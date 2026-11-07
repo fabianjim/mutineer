@@ -96,9 +96,23 @@ collection, about one run of the test suite.
 ## Failures and exit codes
 
 - `mutmut run` exits 0 when it finishes, even if mutants survive.
-- **A failing baseline** exits 1. The message depends on cache state: `failed to collect
-  stats` (fresh `mutants/`), `Failed to run clean test` (cached stats) or `Failed to collect
-  list of tests` (collection error). All are BLOCK.
+- **A failing baseline** exits 1. All of these are BLOCK:
+  - `Failed to collect list of tests`: pytest can't collect the suite;
+  - `failed to collect stats`: a test fails in the stats run, which always runs, because the
+    engine deletes `mutants/` and `mutmut-stats.json` before each pass;
+  - `Failed to run clean test`: the suite passed the stats run but fails a second run in
+    the same process (under `fork` only, see below).
+- **The clean-test run** repeats the stats run (Mutineer's per-function globs never match
+  mutmut's test map keys, so it runs all tests) and mutmut only checks its exit code. The
+  launcher skips it where it can't fail differently from the stats run:
+  - under `forkserver`, always: stats and clean each run in a fresh child, so the clean run
+    passes whenever stats did;
+  - under `fork` (mutmut's default), only in `run`'s rule pass: `fork` runs stats in the
+    parent and forks every mutant from it, so a suite that passes only once per process
+    would report false kills; the clean run catches that. The rule pass runs a subset of
+    tests the all-tests pass already checked; `recheck` has no earlier pass, so it keeps it.
+    A rule test that can run twice in the full-suite order but not in the rule-only order
+    is not caught.
 - **No test for any requested function:** exit 1, `Stopping early, because we could not find
   any test case`, and no results written.
 - **Tests hit no mutant's module path:** `Stopping early, because tests recorded trampoline

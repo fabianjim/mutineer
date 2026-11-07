@@ -56,6 +56,9 @@ reasons for them:
     which resets the cache anyway, and mutants requested by name always rerun;
   - read `.meta` exit codes and `mutmut-stats.json` right after each pass (the next pass
     overwrites them), only for the names requested; never use `mutmut results`;
+  - skip mutmut's clean-test run (a repeat of the stats run) under `forkserver`, and under
+    `fork` only in `run`'s rule pass: `fork` forks mutants from the process that ran stats,
+    so the clean run is what catches a suite that passes only once per process;
   - map exit codes to statuses yourself; use per-function globs, because an exact name
     raises `KeyError` when its function has no stats entry;
   - `engine/_launch.py` is the only module touching mutmut internals; it overrides mutmut's

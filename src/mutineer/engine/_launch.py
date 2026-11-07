@@ -2,7 +2,7 @@
 
 Usage (always with the project root as the working directory)::
 
-    python -m mutineer.engine._launch '<json overrides>' run 'pkg.mod.x_f__mutmut_*' ...
+    python -m mutineer.engine._launch '<json overrides>' run [FLAG] 'pkg.mod.x_f__mutmut_*' ...
     python -m mutineer.engine._launch '<json overrides>' show NAME [NAME ...]
     python -m mutineer.engine._launch '<json overrides>' mutineer-config
     python -m mutineer.engine._launch '<json overrides>' mutineer-functions FILE [FILE ...]
@@ -12,16 +12,24 @@ config dataclass with ``dataclasses.replace`` before ``mutmut.__main__`` is impo
 user's ``pyproject.toml`` is never edited. ``show`` accepts
 several names and prints a ``RECORD_SEP`` + name line before each mutant's output.
 
+``run`` skips mutmut's clean-test run, which repeats the stats run and only checks its exit
+code. Under ``forkserver`` it always passes when stats did (each runs in a fresh child), so
+it is always skipped. Under ``fork`` mutants fork from the process that ran stats and the
+clean run checks the suite passes a second time there, so it is kept unless ``FLAG`` is
+``--fork-clean-checked``: the launcher's own flag, meaning an earlier pass already checked
+these tests. It is removed before mutmut parses its argv.
+
 The two ``mutineer-*`` commands print one ``MARKER`` line holding JSON:
 
 - ``mutineer-config``: the resolved config fields the engine needs, and mutmut's version;
 - ``mutineer-functions``: for each file, the mangled function names mutmut generates at
   least one mutant for.
 
-Private mutmut names used: ``mutmut.configuration._load_config``, ``._config`` and
-``mutmut.mutation.file_mutation.mutate_file_contents``. Exit codes ``EXIT_VERSION`` and
-``EXIT_CONFIG`` mean mutmut is out of range or has no usable ``source_paths``; the reason
-is on stderr.
+Private mutmut names used: ``mutmut.configuration._load_config``, ``._config``,
+``mutmut.mutation.file_mutation.mutate_file_contents`` and ``run_clean_tests`` on
+``mutmut.workers.isolation.ForkServerRunner`` and ``.ForkRunner``. Exit codes
+``EXIT_VERSION`` and ``EXIT_CONFIG`` mean mutmut is out of range or has no usable
+``source_paths``; the reason is on stderr.
 """
 
 from __future__ import annotations
@@ -40,6 +48,8 @@ RECORD_SEP = "\x1e"
 EXIT_VERSION = 90
 EXIT_CONFIG = 91
 EXIT_USAGE = 92
+FORK_CLEAN_CHECKED = "--fork-clean-checked"
+"""``run`` flag: an earlier pass already ran mutmut's clean-test run for these tests."""
 
 
 def version_ok(version: str) -> bool:
@@ -147,8 +157,27 @@ def main(argv: list[str]) -> None:
             sys.stdout.flush()
         return
 
-    sys.argv = ["mutmut", *argv[1:]]
+    if command == "run":
+        fork_too = FORK_CLEAN_CHECKED in args
+        args = [a for a in args if a != FORK_CLEAN_CHECKED]
+        _skip_clean_run(fork_too=fork_too)
+    sys.argv = ["mutmut", command, *args]
     cli()
+
+
+def _skip_clean_run(*, fork_too: bool) -> None:
+    """Make mutmut's clean-test run pass without running tests.
+
+    Always under ``forkserver``; under ``fork`` only when ``fork_too``.
+    """
+    from mutmut.workers import isolation
+
+    def skipped(self: Any, tests: Any) -> int:
+        return 0
+
+    isolation.ForkServerRunner.run_clean_tests = skipped  # type: ignore[method-assign]
+    if fork_too:
+        isolation.ForkRunner.run_clean_tests = skipped  # type: ignore[method-assign]
 
 
 def _forget_mutineer() -> None:
