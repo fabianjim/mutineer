@@ -61,6 +61,9 @@ reasons for them:
     and in `run`'s rule pass under `fork`: `fork` forks mutants from the process that ran
     stats and they run only their covering tests, so a second clean pass of those there is
     what catches a test that passes only once per process;
+  - under `forkserver`, split the stats run round-robin over `min(max_children, 4, tests)`
+    children; never under `fork`, because there stats runs in the process the mutants fork
+    from, and the clean run relies on that;
   - map exit codes to statuses yourself; use per-function globs, because an exact name
     raises `KeyError` when its function has no stats entry;
   - `engine/_launch.py` is the only module touching mutmut internals; it overrides mutmut's

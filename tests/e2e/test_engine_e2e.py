@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -129,16 +130,20 @@ def test_agent_gap_two_passes(
 # ---- baseline ----
 
 
+@pytest.mark.parametrize("isolation", ["fork", "forkserver"])
 def test_failing_test_with_fresh_and_warm_mutants(
-    shop_copy: Any, engine: MutmutEngine, ship_rule_map: RuleMap, diff_of: DiffOf
+    shop_copy: Any, engine: MutmutEngine, ship_rule_map: RuleMap, diff_of: DiffOf, isolation: str
 ) -> None:
     shop_copy.checkout("agent")
     root = shop_copy.path
+    set_isolation(root, isolation)
     assert not (root / "mutants").exists()
     shop_copy.write("tests/test_broken.py", FAILING_TEST)
     fresh = engine.run(diff_of(root), ship_rule_map, root)
     assert fresh.baseline_failed
-    assert fresh.baseline_output and "test_broken" in fresh.baseline_output
+    assert fresh.baseline_output
+    if isolation == "fork":  # under forkserver, pytest's output stays in the stats child
+        assert "test_broken" in fresh.baseline_output
     assert fresh.results == []
 
     (root / "tests/test_broken.py").unlink()
@@ -193,6 +198,12 @@ def sessions(log: Path) -> list[str]:
     return out
 
 
+def stats_runs(seen: list[str]) -> int:
+    """Stats runs: each is one or more ``"stats"`` sessions in a row (under ``forkserver``
+    a listing session and one per chunk)."""
+    return sum(v == "stats" and (i == 0 or seen[i - 1] != "stats") for i, v in enumerate(seen))
+
+
 def clean_runs(seen: list[str]) -> int:
     """Clean-test sessions: ``""`` between the stats and the forced-fail session.
 
@@ -230,7 +241,7 @@ def test_clean_test_run_only_where_it_checks_something(
     assert not run.baseline_failed
     assert len(survivors(run, "rule")) == 4  # the rule pass ran, results unchanged
     seen = sessions(log)
-    assert seen.count("stats") == 2  # the logger sees both passes
+    assert stats_runs(seen) == 2  # the logger sees both passes
     # under fork: the all-tests pass only; the rule pass runs a subset of the same tests
     assert clean_runs(seen) == expected
 
@@ -239,7 +250,7 @@ def test_clean_test_run_only_where_it_checks_something(
     assert not again.baseline_failed
     assert {r.status for r in again.results} == {S}
     seen = sessions(log)
-    assert seen.count("stats") == 1
+    assert stats_runs(seen) == 1
     assert clean_runs(seen) == expected  # recheck has no earlier pass to rely on
 
 
@@ -457,6 +468,140 @@ def test_suite_that_passes_only_once_per_process(
     else:
         assert not again.baseline_failed
         assert {r.status for r in again.results} == {S}
+
+
+# ---- mutmut's stats run ----
+
+PID_LOGGER = """
+
+def pytest_runtest_logstart(nodeid, location):
+    import os
+
+    with open({log!r}, "a") as f:
+        f.write(repr((os.environ.get("MUTANT_UNDER_TEST"), os.getpid(), nodeid)) + "\\n")
+"""
+
+
+def add_pid_logger(root: Path, log: Path) -> None:
+    conftest = root / "tests/conftest.py"
+    conftest.write_text(conftest.read_text() + PID_LOGGER.format(log=str(log)))
+
+
+def stats_by_pid(log: Path) -> list[dict[int, list[str]]]:
+    """Per ``mutmut run`` since the last call, the tests its stats run started, by process,
+    then clear the log. Concurrent stats children interleave, but all of them finish before
+    the run starts anything else."""
+    lines = log.read_text().splitlines() if log.exists() else []
+    log.unlink(missing_ok=True)
+    out: list[dict[int, list[str]]] = []
+    previous = None
+    for line in lines:
+        value, pid, nodeid = ast.literal_eval(line)
+        if value == "stats":
+            if previous != "stats":
+                out.append({})
+            out[-1].setdefault(pid, []).append(nodeid)
+        previous = value
+    return out
+
+
+def collected_suite(root: Path) -> list[str]:
+    args = ["--collect-only", "-q", "--ignore=mutants", "-p", "no:cacheprovider"]
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", *args],
+        cwd=root,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return sorted(line for line in proc.stdout.splitlines() if "::" in line)
+
+
+def statuses(run: EngineRun) -> dict[tuple[str, str], MutantStatus]:
+    return {(r.run, r.name): r.status for r in run.results}
+
+
+def test_stats_run_split_over_children_under_forkserver(
+    shop_copy: Any, ship_rule_map: RuleMap, diff_of: DiffOf, tmp_path: Path
+) -> None:
+    shop_copy.checkout("agent-gap")
+    root = shop_copy.path
+    set_isolation(root, "forkserver")
+    log = tmp_path / "pids.log"
+    add_pid_logger(root, log)
+    suite = collected_suite(root)
+    one, two = MutmutEngine(max_children=1), MutmutEngine(max_children=2)
+
+    single = one.run(diff_of(root), ship_rule_map, root)
+    assert not single.baseline_failed
+    single_all, single_rule = stats_by_pid(log)
+    assert len(single_all) == len(single_rule) == 1  # max_children 1: mutmut's own stats run
+    assert sorted(*single_all.values()) == suite
+
+    split = two.run(diff_of(root), ship_rule_map, root)
+    assert not split.baseline_failed
+    split_all, split_rule = stats_by_pid(log)
+    assert len(split_all) == 2
+    assert sorted(t for tests in split_all.values() for t in tests) == suite  # each test once
+    rule_tests = {t for tests in split_rule.values() for t in tests}
+    assert rule_tests and rule_tests <= set(ship_rule_map)  # the listing kept the rule filter
+    assert split.tests_by_function == single.tests_by_function
+    assert statuses(split) == statuses(single)
+    assert len(survivors(split, "rule")) == 4
+
+    names = [r.name for r in by_run(split, "rule") if r.status == S]
+    single_again = one.rerun(names, ship_rule_map, root)
+    (single_rerun,) = stats_by_pid(log)
+    split_again = two.rerun(names, ship_rule_map, root)
+    (split_rerun,) = stats_by_pid(log)
+    assert len(single_rerun) == 1 and len(split_rerun) == 2
+    assert not split_again.baseline_failed
+    assert statuses(split_again) == statuses(single_again)
+    assert {r.status for r in split_again.results} == {S}
+
+
+def test_stats_run_not_split_under_fork(
+    shop_copy: Any, ship_rule_map: RuleMap, diff_of: DiffOf, tmp_path: Path
+) -> None:
+    shop_copy.checkout("agent-gap")
+    root = shop_copy.path
+    set_isolation(root, "fork")
+    log = tmp_path / "pids.log"
+    add_pid_logger(root, log)
+
+    run = MutmutEngine(max_children=2).run(diff_of(root), ship_rule_map, root)
+    assert not run.baseline_failed
+    passes = stats_by_pid(log)
+    assert len(passes) == 2  # both passes ran
+    assert [len(by_pid) for by_pid in passes] == [1, 1]
+
+
+STATS_ONLY_COLLECTION_ERROR = """\
+import os
+
+if os.environ.get("MUTANT_UNDER_TEST") == "stats":
+    raise RuntimeError("only mutmut's stats run sees this")
+
+
+def test_fine():
+    pass
+"""
+
+
+@pytest.mark.parametrize("isolation", ["fork", "forkserver"])
+def test_collection_error_in_stats_run_blocks(
+    shop_copy: Any, ship_rule_map: RuleMap, diff_of: DiffOf, isolation: str
+) -> None:
+    shop_copy.checkout("agent")
+    root = shop_copy.path
+    set_isolation(root, isolation)
+    shop_copy.write("tests/test_stats_only.py", STATS_ONLY_COLLECTION_ERROR)
+    assert "tests/test_stats_only.py::test_fine" in collected_suite(root)
+
+    run = MutmutEngine(max_children=2).run(diff_of(root), ship_rule_map, root)
+    assert run.baseline_failed
+    assert run.results == []
 
 
 # ---- reach and measurability ----

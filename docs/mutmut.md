@@ -17,7 +17,11 @@ on, verified against mutmut 3.8.1. When upgrading mutmut, check each one again: 
   `mutmut.runners.harness.PytestRunner.run_forced_fail` (replaced), `PytestRunner.run_tests`
   (called) and `mutmut.state.state()` with its `tests_by_mangled_function_name` and
   `duration_by_test` (read), to scope the clean and forced-fail runs (see "Failures and exit
-  codes").
+  codes"); `ForkServerRunner.collect_stats` (replaced), its `.list_all_tests` (called),
+  `.max_workers`, `.test_runner_class` and `.test_runner_args` (read),
+  `PytestRunner.run_stats` (called), `mutmut.models.results.StatsResult` and `state()`'s
+  `function_dependencies` and `stats_time` (merged), to split the stats run under
+  `forkserver` (see "The cache").
 - **Scope to files** with `only_mutate`. An empty `only_mutate` means every file matches, so
   never pass it empty.
 - **Scope to functions** with fnmatch globs: `mutmut run "shop.pricing.x_discount__mutmut_*"`.
@@ -99,7 +103,14 @@ structure, so the engine asks mutmut's own generator (`mutate_file_contents`, vi
 
 Because of 3 to 5 the engine deletes `mutants/` at the start of every `run` and `rerun`.
 Because of 1 and 2 little of the cache would be reused anyway. The cost is one stats
-collection, about one run of the test suite.
+collection, about one run of the test suite. Under `forkserver` the launcher splits it: it
+lists the selected tests in a child, sorts them and deals them round-robin over
+`min(max_children, 4, tests)` concurrent children, each a stats run of its own whose results
+are merged as mutmut merges its single child's (with every caller kept in
+`function_dependencies`). More than 4 children bought nothing on Mutineer's own suite, and
+round-robin was balanced where splitting by file was not. Under `fork` it is never split:
+stats runs in the process the mutants fork from, and the clean run relies on that (see
+"Failures and exit codes").
 
 ## Failures and exit codes
 
@@ -107,7 +118,8 @@ collection, about one run of the test suite.
 - **A failing baseline** exits 1. All of these are BLOCK:
   - `Failed to collect list of tests`: pytest can't collect the suite;
   - `failed to collect stats`: a test fails in the stats run, which always runs, because the
-    engine deletes `mutants/` and `mutmut-stats.json` before each pass;
+    engine deletes `mutants/` and `mutmut-stats.json` before each pass; under `forkserver`
+    also a collection error while listing the tests for the split stats run;
   - `Failed to run clean test`: a test covering a requested function passed the stats run
     but fails a second run in the same process (under `fork` only, see below).
 - **The clean-test and forced-fail runs** come after stats. mutmut picks their tests by
@@ -138,6 +150,14 @@ collection, about one run of the test suite.
     the same process. A mutant runs its own subset in a different order from the clean run
     (and the rule pass a different order from the all-tests pass); the old full-suite clean
     run had the same gap.
+- **A split stats run** (under `forkserver`) runs each test once, but with different
+  neighbours and in a different order than one session, and session-scoped fixtures run
+  once per chunk. A test that passes only after (or only without) certain others can now
+  fail the stats run or start passing; mutants already run per-function subsets in their own
+  order, so such a suite was already unreliable. A mutated function called at import time
+  is recorded against the first test of each chunk instead of the first of the session
+  (mutmut clears its hit list per test), so it can map to up to 4 tests instead of one.
+  Durations measured under concurrency can be longer; they only lengthen mutant timeouts.
 - **No test for any requested function:** exit 1, `Stopping early, because we could not find
   any test case`, and no results written.
 - **Tests hit no mutant's module path:** `Stopping early, because tests recorded trampoline

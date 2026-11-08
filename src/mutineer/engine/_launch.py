@@ -23,6 +23,14 @@ tests the mutants will run pass a second time there, so it is kept unless ``FLAG
 ``--fork-clean-checked``: the launcher's own flag, meaning an earlier pass already checked
 these tests. It is removed before mutmut parses its argv.
 
+``run`` also splits mutmut's full stats run under ``forkserver``: the selected tests are
+listed in a child, sorted and dealt round-robin into ``min(max_children, STATS_CHILDREN,
+tests)`` chunks, each a stats run in its own concurrent child, merged as mutmut merges its
+single child's result. With one chunk or fewer it is mutmut's own run. A collection error in
+the listing makes the stats run fail, as one in the stats run itself does. Under ``fork``
+stats runs in the launcher process, the one every mutant forks from, and the clean run checks
+that the tests pass a second time there, so moving stats into children would break it.
+
 The two ``mutineer-*`` commands print one ``MARKER`` line holding JSON:
 
 - ``mutineer-config``: the resolved config fields the engine needs, and mutmut's version;
@@ -35,7 +43,10 @@ Private mutmut names used: ``mutmut.configuration._load_config``, ``._config``,
 ``mutmut.__main__.tests_for_mutant_names`` (replaced),
 ``mutmut.runners.harness.PytestRunner.run_forced_fail`` (replaced) and ``.run_tests``, and
 ``mutmut.state.state()`` with its ``tests_by_mangled_function_name`` and
-``duration_by_test`` (read). Exit codes
+``duration_by_test`` (read); ``ForkServerRunner.collect_stats`` (replaced), its
+``.list_all_tests``, ``.max_workers``, ``.test_runner_class`` and ``.test_runner_args``,
+``PytestRunner.run_stats``, ``mutmut.models.results.StatsResult``, and ``state()``'s
+``function_dependencies`` and ``stats_time`` (merged). Exit codes
 ``EXIT_VERSION`` and ``EXIT_CONFIG`` mean mutmut is out of range or has no usable
 ``source_paths``; the reason is on stderr.
 """
@@ -58,6 +69,8 @@ EXIT_CONFIG = 91
 EXIT_USAGE = 92
 FORK_CLEAN_CHECKED = "--fork-clean-checked"
 """``run`` flag: an earlier pass already ran mutmut's clean-test run for these tests."""
+STATS_CHILDREN = 4
+"""Most concurrent children for mutmut's stats run under ``forkserver``; more bought nothing."""
 _GLOB_SUFFIX = "__mutmut_*"
 
 
@@ -170,6 +183,7 @@ def main(argv: list[str]) -> None:
         fork_clean_checked = FORK_CLEAN_CHECKED in args
         args = [a for a in args if a != FORK_CLEAN_CHECKED]
         _scope_baseline_runs(fork_clean_checked=fork_clean_checked)
+        _split_stats_run()
     sys.argv = ["mutmut", command, *args]
     cli()
 
@@ -241,6 +255,121 @@ def _scope_baseline_runs(*, fork_clean_checked: bool) -> None:
     isolation.ForkRunner.run_clean_tests = (  # type: ignore[method-assign]
         skipped if fork_clean_checked else fork_clean
     )
+
+
+def _split_stats_run() -> None:
+    """Under ``forkserver``, split mutmut's full stats run over concurrent children.
+
+    The selected tests are listed in a child, sorted and dealt round-robin into
+    ``min(max_children, STATS_CHILDREN, tests)`` chunks, each run in its own child; the
+    results are merged as mutmut merges its single child's. With one chunk or fewer, or
+    for an incremental stats run, mutmut's own method runs unchanged. A listing that fails
+    (a collection error) returns a non-zero code, so mutmut reports a failed stats run.
+    ``ForkRunner`` is left alone: it runs stats in the process the mutants fork from.
+    """
+    from mutmut.workers import isolation
+
+    original = isolation.ForkServerRunner.collect_stats
+
+    def collect_stats(self: Any, tests: Any) -> int:
+        tests = list(tests) if tests is not None else None
+        if tests:  # incremental: never for Mutineer
+            return int(original(self, tests))
+        if min(self.max_workers, STATS_CHILDREN) <= 1:
+            return int(original(self, tests))
+        try:
+            ids = sorted(self.list_all_tests().ids)
+        except ChildProcessError as exc:  # how the listing child reports a collection error
+            print(f"mutineer: listing the tests for mutmut's stats run failed: {exc}")
+            return 1
+        k = min(self.max_workers, STATS_CHILDREN, len(ids))
+        if k <= 1:  # no ids fails in mutmut's own run as it always did
+            return int(original(self, tests))
+        return _stats_in_children(self, [ids[i::k] for i in range(k)])
+
+    isolation.ForkServerRunner.collect_stats = collect_stats  # type: ignore[method-assign]
+
+
+def _stats_in_children(runner: Any, chunks: list[list[str]]) -> int:
+    """Run mutmut's stats collection on each chunk in its own child, merge into ``state()``.
+
+    Returns 0 only when every child sent a result and every result's exit code is 0.
+    """
+    import os
+    import pickle
+    import signal
+    import traceback
+
+    from mutmut.models.results import StatsResult
+    from mutmut.state import state
+
+    def run_chunk(chunk: list[str]) -> bytes:
+        child_runner = runner.test_runner_class(**runner.test_runner_args)
+        exit_code = child_runner.run_stats(tests=chunk)
+        result = StatsResult(
+            exit_code=exit_code,
+            tests_by_mangled_function_name=dict(state().tests_by_mangled_function_name),
+            duration_by_test=dict(state().duration_by_test),
+            stats_time=state().stats_time or 0.0,
+            function_dependencies=dict(state().function_dependencies),
+        )
+        return pickle.dumps(result.to_dict())
+
+    readers: dict[int, int] = {}  # pid -> read end of its pipe, until read
+    running: set[int] = set()  # pids not reaped yet
+    payloads: dict[int, bytes] = {}
+    codes: dict[int, int] = {}
+    try:
+        for chunk in chunks:
+            read_fd, write_fd = os.pipe()
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    os.close(read_fd)
+                    payload = run_chunk(chunk)
+                    with os.fdopen(write_fd, "wb") as out:
+                        out.write(payload)
+                except BaseException:
+                    traceback.print_exc()
+                    os._exit(1)
+                os._exit(0)
+            os.close(write_fd)
+            readers[pid] = read_fd
+            running.add(pid)
+        # read every pipe to the end before waiting: a child blocks on a full pipe
+        for pid in list(readers):
+            with os.fdopen(readers.pop(pid), "rb") as pipe:
+                payloads[pid] = pipe.read()
+        for pid in list(running):
+            _, status = os.waitpid(pid, 0)
+            running.discard(pid)
+            codes[pid] = os.waitstatus_to_exitcode(status)
+    finally:
+        # only left over when this process failed half-way: leave no orphan behind
+        for fd in readers.values():
+            os.close(fd)
+        for pid in running:  # not reaped yet, so the pid is still this child's
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+
+    failed = 0
+    for pid, code in codes.items():
+        try:
+            result = StatsResult.from_dict(pickle.loads(payloads[pid])) if code == 0 else None
+        except Exception:  # an empty or cut-off payload
+            result = None
+        if result is None:
+            failed = failed or code or 1
+            continue
+        for key, of_key in result.tests_by_mangled_function_name.items():
+            state().tests_by_mangled_function_name[key] |= of_key
+        state().duration_by_test.update(result.duration_by_test)
+        state().stats_time = result.stats_time  # as mutmut does; it overwrites it anyway
+        for key, callers in result.function_dependencies.items():
+            # several children can report the same function: keep every edge
+            state().function_dependencies[key] |= callers
+        failed = failed or result.exit_code
+    return int(failed)
 
 
 def _forget_mutineer() -> None:
