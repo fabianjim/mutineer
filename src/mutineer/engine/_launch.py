@@ -12,10 +12,14 @@ config dataclass with ``dataclasses.replace`` before ``mutmut.__main__`` is impo
 user's ``pyproject.toml`` is never edited. ``show`` accepts
 several names and prints a ``RECORD_SEP`` + name line before each mutant's output.
 
-``run`` skips mutmut's clean-test run, which repeats the stats run and only checks its exit
-code. Under ``forkserver`` it always passes when stats did (each runs in a fresh child), so
-it is always skipped. Under ``fork`` mutants fork from the process that ran stats and the
-clean run checks the suite passes a second time there, so it is kept unless ``FLAG`` is
+``run`` scopes mutmut's clean-test and forced-fail runs to the tests that cover the
+requested functions (mutmut's own lookup never matches the per-function globs, so it runs
+the whole selection), and skips both when there are none: no mutant would run. The forced
+fail starts with the fastest covering test; if the covering tests don't fail, it falls back
+to mutmut's unscoped run. The clean run only checks an exit code. Under ``forkserver`` it
+always passes when stats did (each runs in a fresh child), so it is always skipped. Under
+``fork`` mutants fork from the process that ran stats and the clean run checks that the
+tests the mutants will run pass a second time there, so it is kept unless ``FLAG`` is
 ``--fork-clean-checked``: the launcher's own flag, meaning an earlier pass already checked
 these tests. It is removed before mutmut parses its argv.
 
@@ -26,8 +30,12 @@ The two ``mutineer-*`` commands print one ``MARKER`` line holding JSON:
   least one mutant for.
 
 Private mutmut names used: ``mutmut.configuration._load_config``, ``._config``,
-``mutmut.mutation.file_mutation.mutate_file_contents`` and ``run_clean_tests`` on
-``mutmut.workers.isolation.ForkServerRunner`` and ``.ForkRunner``. Exit codes
+``mutmut.mutation.file_mutation.mutate_file_contents``, ``run_clean_tests`` on
+``mutmut.workers.isolation.ForkServerRunner`` and ``.ForkRunner`` (replaced),
+``mutmut.__main__.tests_for_mutant_names`` (replaced),
+``mutmut.runners.harness.PytestRunner.run_forced_fail`` (replaced) and ``.run_tests``, and
+``mutmut.state.state()`` with its ``tests_by_mangled_function_name`` and
+``duration_by_test`` (read). Exit codes
 ``EXIT_VERSION`` and ``EXIT_CONFIG`` mean mutmut is out of range or has no usable
 ``source_paths``; the reason is on stderr.
 """
@@ -50,6 +58,7 @@ EXIT_CONFIG = 91
 EXIT_USAGE = 92
 FORK_CLEAN_CHECKED = "--fork-clean-checked"
 """``run`` flag: an earlier pass already ran mutmut's clean-test run for these tests."""
+_GLOB_SUFFIX = "__mutmut_*"
 
 
 def version_ok(version: str) -> bool:
@@ -158,26 +167,80 @@ def main(argv: list[str]) -> None:
         return
 
     if command == "run":
-        fork_too = FORK_CLEAN_CHECKED in args
+        fork_clean_checked = FORK_CLEAN_CHECKED in args
         args = [a for a in args if a != FORK_CLEAN_CHECKED]
-        _skip_clean_run(fork_too=fork_too)
+        _scope_baseline_runs(fork_clean_checked=fork_clean_checked)
     sys.argv = ["mutmut", command, *args]
     cli()
 
 
-def _skip_clean_run(*, fork_too: bool) -> None:
-    """Make mutmut's clean-test run pass without running tests.
+def _scope_baseline_runs(*, fork_clean_checked: bool) -> None:
+    """Decide what mutmut's clean-test and forced-fail runs do.
 
-    Always under ``forkserver``; under ``fork`` only when ``fork_too``.
+    Both use only the covering tests of the requested functions, fastest first, and are
+    skipped when there are none (every requested mutant is then ``no_tests`` and none
+    runs). The clean run is skipped under ``forkserver``, and under ``fork`` when
+    ``fork_clean_checked``. A forced fail that the covering tests don't fail falls back to
+    mutmut's own unscoped one.
     """
+    import fnmatch
+
+    import mutmut.__main__ as mutmut_main
+    from mutmut.runners.harness import PytestRunner
+    from mutmut.state import state
     from mutmut.workers import isolation
+
+    original_tests_for = mutmut_main.tests_for_mutant_names
+    original_forced_fail = PytestRunner.run_forced_fail
+    original_fork_clean = isolation.ForkRunner.run_clean_tests
+    # the covering tests, known once mutmut asks for the clean run's tests; None: not scoped
+    covering: list[str] | None = None
+
+    def tests_for_mutant_names(mutant_names: Any) -> list[str]:
+        nonlocal covering
+        if not mutant_names:  # no names means every mutant, so every test
+            covering = None
+            return sorted(original_tests_for(mutant_names))
+        test_map = state().tests_by_mangled_function_name
+        tests: set[str] = set()
+        for name in mutant_names:
+            if not name.endswith(_GLOB_SUFFIX):
+                tests |= set(original_tests_for([name]))
+                continue
+            # the keys never contain the suffix, so mutmut's own match finds nothing
+            pattern = name[: -len(_GLOB_SUFFIX)]
+            for key, of_key in test_map.items():
+                if fnmatch.fnmatchcase(key, pattern):
+                    tests |= set(of_key)
+        durations = state().duration_by_test
+        covering = sorted(tests, key=lambda t: (durations.get(t, 0.0), t))
+        return covering
 
     def skipped(self: Any, tests: Any) -> int:
         return 0
 
+    def fork_clean(self: Any, tests: Any) -> int:
+        if covering == []:
+            return 0
+        return int(original_fork_clean(self, tests))
+
+    def forced_fail(self: Any) -> int:
+        if covering is None:
+            return int(original_forced_fail(self))
+        if not covering:
+            return 1  # no requested mutant has a test, so none will run
+        code = int(self.run_tests(mutant_name=None, tests=covering))
+        if code == 0:  # the covering tests swallowed the failure: try them all, as mutmut does
+            return int(original_forced_fail(self))
+        return code
+
+    # a list, not a set: pytest runs the tests in this order
+    mutmut_main.tests_for_mutant_names = tests_for_mutant_names  # type: ignore[assignment]
+    PytestRunner.run_forced_fail = forced_fail  # type: ignore[method-assign]
     isolation.ForkServerRunner.run_clean_tests = skipped  # type: ignore[method-assign]
-    if fork_too:
-        isolation.ForkRunner.run_clean_tests = skipped  # type: ignore[method-assign]
+    isolation.ForkRunner.run_clean_tests = (  # type: ignore[method-assign]
+        skipped if fork_clean_checked else fork_clean
+    )
 
 
 def _forget_mutineer() -> None:

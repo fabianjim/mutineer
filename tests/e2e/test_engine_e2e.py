@@ -5,6 +5,7 @@ Mutants are identified by their mutated source text, never by mutmut's numbering
 
 from __future__ import annotations
 
+import ast
 import json
 import shutil
 import subprocess
@@ -240,6 +241,153 @@ def test_clean_test_run_only_where_it_checks_something(
     seen = sessions(log)
     assert seen.count("stats") == 1
     assert clean_runs(seen) == expected  # recheck has no earlier pass to rely on
+
+
+TEST_LOGGER = """
+
+def pytest_runtest_logstart(nodeid, location):
+    import os
+
+    with open({log!r}, "a") as f:
+        f.write(repr((os.environ.get("MUTANT_UNDER_TEST"), nodeid)) + "\\n")
+"""
+
+
+def add_test_logger(root: Path, log: Path) -> None:
+    conftest = root / "tests/conftest.py"
+    conftest.write_text(conftest.read_text() + TEST_LOGGER.format(log=str(log)))
+
+
+def logged_runs(log: Path) -> list[list[tuple[str | None, str]]]:
+    """``(MUTANT_UNDER_TEST, nodeid)`` per started test since the last call, one list per
+    ``mutmut run`` (each starts with its stats run), then clear the log."""
+    lines = log.read_text().splitlines() if log.exists() else []
+    log.unlink(missing_ok=True)
+    out: list[list[tuple[str | None, str]]] = []
+    previous = None
+    for line in lines:
+        value, nodeid = ast.literal_eval(line)
+        if value == "stats" and previous != "stats":
+            out.append([])
+        out[-1].append((value, nodeid))
+        previous = value
+    return out
+
+
+def started(run_starts: list[tuple[str | None, str]], value: str) -> list[str]:
+    return [nodeid for v, nodeid in run_starts if v == value]
+
+
+@pytest.mark.parametrize("isolation", ["fork", "forkserver"])
+def test_clean_and_forced_fail_runs_use_only_covering_tests(
+    shop_copy: Any,
+    engine: MutmutEngine,
+    ship_rule_map: RuleMap,
+    diff_of: DiffOf,
+    tmp_path: Path,
+    isolation: str,
+) -> None:
+    shop_copy.checkout("agent-gap")
+    root = shop_copy.path
+    set_isolation(root, isolation)
+    log = tmp_path / "tests.log"
+    add_test_logger(root, log)
+    # collected first and covers nothing, so an unscoped forced fail starts it too
+    shop_copy.write("tests/rules/test_a_first.py", "def test_first():\n    pass\n")
+
+    run = engine.run(diff_of(root), ship_rule_map, root)
+    assert not run.baseline_failed
+    assert len(survivors(run, "rule")) == 4  # the rule pass ran, results unchanged
+    all_pass, rule_pass = logged_runs(log)
+    covering = {t for ts in run.tests_by_function.values() for t in ts}
+    rule_covering = {t for t in covering if ship_rule_map.get(t)}
+    assert rule_covering
+
+    clean = started(all_pass, "")
+    if isolation == "fork":
+        assert set(clean) == covering
+        assert len(covering) < len(set(started(all_pass, "stats")))
+    else:
+        assert clean == []
+    assert started(rule_pass, "") == []
+    for run_starts, tests in ((all_pass, covering), (rule_pass, rule_covering)):
+        forced = started(run_starts, "fail")
+        assert len(forced) == 1 and forced[0] in tests
+
+    names = [r.name for r in by_run(run, "rule") if r.status == S]
+    again = engine.rerun(names, ship_rule_map, root)
+    assert not again.baseline_failed
+    assert {r.status for r in again.results} == {S}
+    (rerun_starts,) = logged_runs(log)
+    clean = started(rerun_starts, "")
+    assert set(clean) == (rule_covering if isolation == "fork" else set())
+    forced = started(rerun_starts, "fail")
+    assert len(forced) == 1 and forced[0] in rule_covering
+
+
+@pytest.mark.parametrize("isolation", ["fork", "forkserver"])
+def test_no_covering_tests_skips_clean_and_forced_fail_runs(
+    shop_copy: Any,
+    engine: MutmutEngine,
+    ship_rule_map: RuleMap,
+    diff_of: DiffOf,
+    tmp_path: Path,
+    isolation: str,
+) -> None:
+    root = shop_copy.path
+    set_isolation(root, isolation)
+    log = tmp_path / "tests.log"
+    add_test_logger(root, log)
+    pricing = root / "src/shop/pricing.py"
+    # discount next to it is tested, so mutmut does not stop early
+    pricing.write_text(pricing.read_text() + "\n\ndef surcharge(total):\n    return total + 3\n")
+
+    run = engine.run(diff_of(root), ship_rule_map, root)
+    assert not run.baseline_failed
+    assert run.unreached == ["shop.pricing.x_surcharge"]
+    assert run.results and all(r.status == N for r in run.results)
+    (run_starts,) = logged_runs(log)
+    assert started(run_starts, "stats")
+    assert started(run_starts, "") == started(run_starts, "fail") == []
+
+
+SWALLOW_TESTS = """\
+from pkg.m import f, g
+
+
+def test_a():
+    assert g(2) == 4
+
+
+def test_b():
+    try:
+        f(1)
+    except Exception:
+        pass
+"""
+
+
+def test_forced_fail_falls_back_when_covering_tests_swallow_it(
+    git_repo: Any, engine: MutmutEngine, diff_of: DiffOf
+) -> None:
+    root = git_repo.path
+    git_repo.write(
+        "pyproject.toml",
+        '[tool.mutmut]\nsource_paths = ["src/pkg"]\nprocess_isolation = "fork"\n\n'
+        '[tool.pytest.ini_options]\npythonpath = ["src"]\n',
+    )
+    git_repo.write("src/pkg/__init__.py", "")
+    git_repo.write("src/pkg/m.py", "def g(x):\n    return x * 2\n")
+    git_repo.write("tests/test_m.py", SWALLOW_TESTS)
+    git_repo.write(".gitignore", "mutants/\n")
+    git_repo.commit("base")
+    git_repo.write("src/pkg/m.py", "def g(x):\n    return x * 2\n\n\ndef f(x):\n    return x + 1\n")
+
+    # test_b, the only test covering f, swallows the forced failure; test_a still raises it
+    run = engine.run(diff_of(root), {}, root)
+    assert not run.baseline_failed
+    assert run.tests_by_function == {"pkg.m.x_f": ["tests/test_m.py::test_b"]}
+    assert run.results and {(r.function, r.status) for r in run.results} == {("pkg.m.x_f", S)}
 
 
 TWICE_MODULE = """\

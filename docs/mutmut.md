@@ -8,8 +8,16 @@ on, verified against mutmut 3.8.1. When upgrading mutmut, check each one again: 
 
 - **Config without editing the user's files.** mutmut keeps its config in a private
   dataclass, `mutmut.configuration._config` (loaded by `_load_config`). `engine/_launch.py`
-  replaces fields with `dataclasses.replace` before importing `mutmut.__main__`. These are
-  the only private names Mutineer touches.
+  replaces fields with `dataclasses.replace` before importing `mutmut.__main__`.
+- **Private names Mutineer touches**, all in `engine/_launch.py`:
+  `mutmut.configuration._load_config` and `._config`;
+  `mutmut.mutation.file_mutation.mutate_file_contents` (predicting mutated functions);
+  `run_clean_tests` on `mutmut.workers.isolation.ForkServerRunner` and `.ForkRunner`,
+  `mutmut.__main__.tests_for_mutant_names` and
+  `mutmut.runners.harness.PytestRunner.run_forced_fail` (replaced), `PytestRunner.run_tests`
+  (called) and `mutmut.state.state()` with its `tests_by_mangled_function_name` and
+  `duration_by_test` (read), to scope the clean and forced-fail runs (see "Failures and exit
+  codes").
 - **Scope to files** with `only_mutate`. An empty `only_mutate` means every file matches, so
   never pass it empty.
 - **Scope to functions** with fnmatch globs: `mutmut run "shop.pricing.x_discount__mutmut_*"`.
@@ -100,19 +108,36 @@ collection, about one run of the test suite.
   - `Failed to collect list of tests`: pytest can't collect the suite;
   - `failed to collect stats`: a test fails in the stats run, which always runs, because the
     engine deletes `mutants/` and `mutmut-stats.json` before each pass;
-  - `Failed to run clean test`: the suite passed the stats run but fails a second run in
-    the same process (under `fork` only, see below).
-- **The clean-test run** repeats the stats run (Mutineer's per-function globs never match
-  mutmut's test map keys, so it runs all tests) and mutmut only checks its exit code. The
-  launcher skips it where it can't fail differently from the stats run:
+  - `Failed to run clean test`: a test covering a requested function passed the stats run
+    but fails a second run in the same process (under `fork` only, see below).
+- **The clean-test and forced-fail runs** come after stats. mutmut picks their tests by
+  fnmatching the requested names against its test map, whose keys (`pkg.mod.x_f`) never
+  contain `__mutmut_`, so with Mutineer's per-function globs it finds none and runs the whole
+  selection. The launcher replaces that lookup: both runs use only the tests covering the
+  requested functions (the union of their test map entries, fastest first), and both are
+  skipped when that union is empty, because every requested mutant is then `no_tests` and
+  none runs.
+- **The forced-fail run** sets `MUTANT_UNDER_TEST=fail`, so every trampoline raises, and
+  mutmut only checks that the run fails. The fastest covering test reaches a requested
+  function, so it usually fails at once. If every covering test swallows the exception
+  (`except Exception`), the launcher falls back to mutmut's own unscoped run, which fails
+  with `FAILED: Unable to force test failures` only where it did before.
+- **The clean run** only checks an exit code. The launcher skips it where it can't fail
+  differently from the stats run:
   - under `forkserver`, always: stats and clean each run in a fresh child, so the clean run
     passes whenever stats did;
   - under `fork` (mutmut's default), only in `run`'s rule pass: `fork` runs stats in the
-    parent and forks every mutant from it, so a suite that passes only once per process
-    would report false kills; the clean run catches that. The rule pass runs a subset of
-    tests the all-tests pass already checked; `recheck` has no earlier pass, so it keeps it.
-    A rule test that can run twice in the full-suite order but not in the rule-only order
-    is not caught.
+    parent and forks every mutant from it, so a test that passes only once per process
+    would report false kills; the clean run catches that. A mutant runs only its own
+    function's covering tests, so running their union a second time in the parent covers
+    every test any mutant will run; a can't-run-twice test that covers no requested
+    function no longer blocks, because no mutant runs it. The rule pass runs a subset of
+    tests the all-tests pass already checked; `recheck` has no earlier pass, so it keeps it
+    (scoped to the rule tests covering the requested functions).
+  - Not caught: a test whose second-run result depends on which tests ran before it in
+    the same process. A mutant runs its own subset in a different order from the clean run
+    (and the rule pass a different order from the all-tests pass); the old full-suite clean
+    run had the same gap.
 - **No test for any requested function:** exit 1, `Stopping early, because we could not find
   any test case`, and no results written.
 - **Tests hit no mutant's module path:** `Stopping early, because tests recorded trampoline
