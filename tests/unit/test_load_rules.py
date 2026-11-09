@@ -48,6 +48,7 @@ def test_mutineers_own_rules_file_is_valid():
         "RULES-001",
         "ENGINE-001",
         "ENGINE-002",
+        "REUSE-001",
     ]
 
 

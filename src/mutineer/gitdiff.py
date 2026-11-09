@@ -82,6 +82,50 @@ def read_base_file(root: Path, sha: str, path: str) -> str | None:
     return proc.stdout if proc.returncode == 0 else None
 
 
+def check_repo(root: Path) -> None:
+    """Raise ``ConfigError`` unless ``root`` is in a git repository with a commit."""
+    _check_repo(root)
+
+
+def repository_changes(
+    root: Path, sha: str, exclude: list[str]
+) -> tuple[Path, list[tuple[str, str]]]:
+    """Every change from commit ``sha`` to the files on disk, in the whole repository.
+
+    Unlike ``load_diff``, not limited to ``root``: the repository's top level, and
+    (path, status) pairs with paths relative to it, sorted. Tracked changes have git's
+    status letter (no rename detection: a rename is a deletion and an addition);
+    untracked, not ignored files are ``?``. Submodules are skipped, as in ``load_diff``.
+    ``exclude`` holds paths and directories relative to ``root`` to leave out.
+    """
+    shown = _git(root, "rev-parse", "--show-toplevel", "--show-prefix").stdout.split("\n")
+    top, prefix = Path(shown[0]), shown[1]
+    spec = ["--", ".", *(f":(top,exclude){prefix}{p.rstrip('/')}" for p in exclude)]
+    names = _git(
+        top,
+        "diff",
+        "--name-status",
+        "-z",
+        "--no-renames",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--ignore-submodules",
+        sha,
+        *spec,
+    ).stdout
+    fields = names.split("\0")
+    changes: dict[str, str] = {}
+    i = 0
+    while i + 1 < len(fields) and fields[i]:
+        changes[fields[i + 1]] = fields[i][0]
+        i += 2
+    out = _git(top, "ls-files", "--others", "--exclude-standard", "-z", *spec).stdout
+    for path in out.split("\0"):
+        if path:
+            changes.setdefault(path, "?")
+    return top, sorted(changes.items())
+
+
 # ---- internals ----
 
 

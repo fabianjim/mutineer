@@ -12,12 +12,12 @@ from pathlib import Path
 
 import typer
 
-from mutineer import gitdiff, state
+from mutineer import fingerprint, gitdiff, state
 from mutineer.checks import tamper
 from mutineer.config import Config, load_config
 from mutineer.engine import Engine
 from mutineer.engine.mutmut_engine import MutmutEngine
-from mutineer.errors import CollectionError, RulesError
+from mutineer.errors import CollectionError, MutineerError, RulesError
 from mutineer.ledger import (
     ANSWERS_FILE,
     DISPUTES_FILE,
@@ -51,12 +51,30 @@ def run(
         False, "--no-mutation", help="Tamper and rules checks only; skip mutation testing."
     ),
     strict: bool = typer.Option(False, "--strict", help="Exit 1 on warn."),
+    no_reuse: bool = typer.Option(
+        False, "--no-reuse", help="Always run, even when nothing changed since the last run."
+    ),
 ) -> int:
-    """Judge the diff from the merge-base to the working tree."""
+    """Judge the diff from the merge-base to the working tree.
+
+    Reuses the last verdict when nothing it depends on changed (see `mutineer fresh`).
+    """
     started = time.monotonic()
     root = Path.cwd()
     config = load_config(root)
     base_ref = gitdiff.resolve_base_ref(root, base or config.base)
+    before = current_fingerprint(root, config, base_ref, no_mutation=no_mutation)
+    last = None if no_reuse else _last_state(root)
+    if last is not None and last.fingerprint == before:
+        verdict = last.verdict.model_copy(
+            update={"duration_s": round(time.monotonic() - started, 3)}
+        )
+        if last.base_ref != base_ref:
+            # recheck reads the name, so keep the one this run was given
+            state.save(root, last.model_copy(update={"base_ref": base_ref}))
+        emit(verdict, format, output)
+        return exit_code(verdict, strict=strict)
+
     checked = static_checks(root, config, base_ref)
 
     engine_run: EngineRun | None = None
@@ -79,6 +97,8 @@ def run(
         diff_score=result.diff_score,
         duration_s=time.monotonic() - started,
     )
+    # a file edited during the run may not match the result, so store no fingerprint then
+    after = current_fingerprint(root, config, base_ref, no_mutation=no_mutation)
     state.save(
         root,
         state.State(
@@ -87,10 +107,34 @@ def run(
             survivor_names=result.survivor_names,
             engine_run=engine_run,
             verdict=verdict,
+            fingerprint=before if after == before else None,
         ),
     )
     emit(verdict, format, output)
     return exit_code(verdict, strict=strict)
+
+
+def current_fingerprint(
+    root: Path, config: Config, base_ref: str, *, no_mutation: bool
+) -> fingerprint.Fingerprint:
+    """The fingerprint ``run`` with these options would compare with the stored one."""
+    gitdiff.check_repo(root)
+    sha = gitdiff.merge_base(root, base_ref)
+    return fingerprint.compute(
+        root,
+        config,
+        sha,
+        mutation=not no_mutation,
+        test_paths=_test_paths(root, sha, config),
+    )
+
+
+def _last_state(root: Path) -> state.State | None:
+    """The stored state, or None when there is none or it can't be read (a real run)."""
+    try:
+        return state.load(root)
+    except MutineerError:
+        return None
 
 
 # ---- shared with recheck ----

@@ -84,16 +84,14 @@ def recheck(
         diff_score=diff_score,
         duration_s=time.monotonic() - started,
     )
-    if suite_failed:
-        # keep the last good results, so the next recheck retries the same mutants once
-        # the suite passes again
-        update = {"rounds": rounds, "verdict": verdict}
-    else:
-        update = {
-            "rounds": rounds,
+    # a merged verdict can differ from a fresh run's, so the next run is always real
+    update: dict[str, object] = {"rounds": rounds, "verdict": verdict, "fingerprint": None}
+    if not suite_failed:
+        # on a failed suite, keep the last good results, so the next recheck retries the
+        # same mutants once the suite passes again
+        update |= {
             "survivor_names": result.survivor_names,
             "engine_run": merged,
-            "verdict": verdict,
         }
     state.save(root, last.model_copy(update=update))
     emit(verdict, format, output)

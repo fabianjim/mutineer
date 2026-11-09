@@ -107,6 +107,7 @@ change shows up in the next run as a finding (`rules_file_changed`, `answer_adde
 mutineer run                     # judge the diff from the merge-base to the working tree
 mutineer run --format agent      # compact JSON for the implementing agent
 mutineer recheck --format agent  # after the agent adds tests: rerun only its survivors
+mutineer fresh                   # would `run` reuse the last verdict? exit 0 yes, 1 no
 mutineer dispute ID "<why>"      # agent: a survivor_rule no caller can observe
 mutineer resolve ID... --confirm # human: agree (or --reject --reason TEXT)
 mutineer rules check             # validate rules.toml and list each rule's tests
@@ -120,12 +121,30 @@ mutineer rules dismiss FN... --reason TEXT  # human: answer no to a question
 `git merge-base <base> HEAD`. The base is `--base`, else `[tool.mutineer] base`, else
 `main`, else `master`.
 
+When nothing the verdict depends on changed since the last `run` with the same mode,
+`run` shows the stored verdict again, with the current `--format`, `--output` and
+`--strict`, without running pytest or mutmut. It compares a fingerprint of the merge-base,
+every change git sees in the whole repository, the files under mutmut's `source_paths`
+and `also_copy` and your test paths (ignored or not), the rules and ledger files, the
+config, the Python environment (interpreter, Mutineer, installed packages), and
+`PYTEST_ADDOPTS`, `PYTEST_PLUGINS`, `PYTEST_DISABLE_PLUGIN_AUTOLOAD`, `PYTHONPATH` and
+`PYTHONHASHSEED`. `mutineer fresh` (same `--base` and `--no-mutation`) prints `fresh` and
+exits 0 when `run` would reuse; otherwise it prints `stale:` with what changed and exits
+1. It runs nothing and writes nothing. After a `recheck` the next `run` is always real.
+
+Reuse doesn't see ignored files outside those paths, changes inside git submodules
+outside them, other environment variables, the network or other services, or flaky
+tests. Pass `--no-reuse` when one of those matters. A report written with `--output`
+into the repository is a change git sees, so the next `run` is real; write reports
+outside the repository or to an ignored path.
+
 | Option | |
 |---|---|
 | `--format terminal\|markdown\|json\|agent` | terminal (default), a PR comment, the full verdict, or agent JSON (schema: `docs/schema/agent.schema.json`) |
 | `--output FILE` | write the report to a file instead of stdout |
 | `--no-mutation` | tamper and rules checks only; no mutmut run, no scores |
 | `--strict` | exit 1 on warn |
+| `--no-reuse` | always run, even when `fresh` would say nothing changed |
 | `recheck --max-rounds N` | round cap (default `[tool.mutineer] max_rounds`, 3) |
 
 ### The verdict
@@ -196,13 +215,15 @@ reject; a rejected one goes back to the agent.
 ## What Mutineer writes
 
 `run` and `recheck` write only to `mutants/` (mutmut's working directory) and
-`.mutineer/last-run.json` (the state `recheck` reads), unless you pass `--output`.
+`.mutineer/last-run.json` (the state `recheck` and reuse read), unless you pass
+`--output`. `fresh` writes nothing.
 `rules propose`, `reject` and `dismiss`, `dispute` and `resolve` write only in
 `.mutineer/`. Only the commands you
 run yourself write elsewhere: `init` (`.gitignore`) and `rules accept` (the rules file and
 rule markers in tests).
 
-**`mutants/` is deleted at the start of every `run` and `recheck`.** mutmut's cache gives
+**`mutants/` is deleted at the start of every `run` that isn't reused, and of every
+`recheck`.** mutmut's cache gives
 wrong answers across branches and between Mutineer's two passes, so Mutineer always
 starts clean. If you keep your own mutmut results in `mutants/`, they will be lost; run
 mutmut and Mutineer in separate checkouts if you need both.

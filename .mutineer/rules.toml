@@ -42,3 +42,8 @@ seam = "mutineer.engine.mutmut_engine.MutmutEngine.run"
 id = "ENGINE-002"
 statement = "Only mutants requested in the current run are reported"
 seam = "mutineer.engine.mutmut_engine.MutmutEngine.run"
+
+[[rule]]
+id = "REUSE-001"
+statement = "mutineer run shows the stored verdict again exactly when nothing that verdict depends on has changed since that run, and runs for real otherwise"
+seam = "mutineer.cli.run.run"

@@ -1,4 +1,4 @@
-"""The last run, kept in ``.mutineer/last-run.json`` so ``recheck`` can build on it."""
+"""The last run, kept in ``.mutineer/last-run.json`` for ``recheck`` and for reuse by ``run``."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from mutineer.errors import MutineerError
+from mutineer.fingerprint import Fingerprint
 from mutineer.models import EngineRun, Verdict
 
 STATE_FILE = ".mutineer/last-run.json"
@@ -32,6 +33,9 @@ class State(BaseModel):
     engine_run: EngineRun | None = None
     """None when mutation didn't run (``--no-mutation``)."""
     verdict: Verdict
+    fingerprint: Fingerprint | None = None
+    """What the verdict depends on (``fingerprint.py``); ``run`` reuses the verdict while
+    it matches. None after ``recheck``, or when files changed during the run."""
 
 
 def save(root: Path, state: State) -> Path:

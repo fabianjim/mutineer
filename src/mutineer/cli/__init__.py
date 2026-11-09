@@ -8,7 +8,7 @@ import typer
 from typer.exceptions import TyperException
 
 from mutineer import __version__
-from mutineer.cli import dispute, init, recheck, resolve, rules, run
+from mutineer.cli import dispute, fresh, init, recheck, resolve, rules, run
 from mutineer.errors import MutineerError
 
 USAGE_ERROR_EXIT = 4
@@ -40,6 +40,7 @@ def _root(
 
 app.command(name="run")(run.run)
 app.command(name="recheck")(recheck.recheck)
+app.command(name="fresh", help=fresh.HELP)(fresh.fresh)
 app.add_typer(rules.app, name="rules")
 app.command(name="dispute")(dispute.dispute)
 app.command(name="resolve")(resolve.resolve)

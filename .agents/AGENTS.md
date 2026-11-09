@@ -18,13 +18,15 @@ from implementation detail, and catches tests that were weakened to get green.
 `mutineer run` takes the diff from `git merge-base <base> HEAD` to the files on disk
 (uncommitted and untracked files count), runs tamper detection on the changed tests,
 collects the rule map with pytest, runs mutmut on the changed functions (twice), triages the
-mutants, and renders one verdict. `recheck` reruns the agent's undisputed survivors;
-`dispute` (agent) and `resolve` (human) manage `.mutineer/disputes.toml`; `rules check`
+mutants, and renders one verdict. When nothing the verdict depends on changed since the last
+`run`, `run` shows the stored verdict without running pytest or mutmut (`--no-reuse` always
+runs); `fresh` says whether it would, without running anything. `recheck` reruns the
+agent's undisputed survivors; `dispute` (agent) and `resolve` (human) manage `.mutineer/disputes.toml`; `rules check`
 validates the rules file; `rules propose`/`reject` (agent) manage
 `.mutineer/proposals.toml`; `rules accept`/`dismiss` (human) turn proposals into rules and
 record answers; `init` writes a template and never overwrites. `init` and `rules accept`
-are the only commands that write outside `mutants/` and `.mutineer/`. Invariants and the
-reasons for them:
+are the only commands that write outside `mutants/` and `.mutineer/`; `fresh` writes
+nothing. Invariants and the reasons for them:
 
 - **Promises over details.** Only behaviour named in `.mutineer/rules.toml` is protected.
   A survivor in code no rule covers is a question for a human, never work for the agent,
@@ -85,6 +87,11 @@ reasons for them:
   - `engine/_launch.py` is the only module touching mutmut internals; it overrides mutmut's
     config in memory (the user's config is never edited) and drops `mutineer*` from
     `sys.modules` so Mutineer can mutation-test itself.
+- **Reuse:** `run` reuses the last verdict only when its fingerprint (`fingerprint.py`)
+  matches the stored one. The inputs and why each is there are in that module's
+  docstring; a missed input gives a wrong verdict, which is worse than a slow run. A
+  fingerprint is stored only when it didn't change during the run, and `recheck` clears
+  it, because its merged verdict can differ from a fresh run's.
 - **Verdict:** `block` if any finding is BLOCK, else `warn` if any is WARN, else `pass`;
   INFO never changes it. A failing baseline, including a suite pytest can't collect, is
   BLOCK. Exit codes: 0 pass or warn, 1 warn with `--strict`, 2 block, 3 `recheck` round
