@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from mutineer.models import Audience, Finding, RulesFile, Score, Severity, UnmeasuredLocation
-from mutineer.triage import SEAM_GUIDANCE, triage
+from mutineer.triage import triage
 
 
 def kinds(findings: list[Finding]) -> list[str]:
@@ -73,19 +73,24 @@ def test_survivor_rule_next_action_names_the_seam_and_the_line(
     build: Any, ship_rules: RulesFile
 ) -> None:
     first = triage(agent_gap(build), build.rule_map, ship_rules).findings[0]
-    assert first.next_action == (
+    assert first.next_action is not None
+    assert first.next_action.startswith(
         "Test SHIP-003 through `shop.shipping.quote` so that this change to line 8 fails. "
-        + SEAM_GUIDANCE
+        'Mark the new test @pytest.mark.rule("SHIP-003")'
     )
+    assert first.evidence["seams"] == {"SHIP-003": {"seam": "shop.shipping.quote", "reaches": True}}
     assert first.evidence["rule_tests"] == [build.rule_test]
     assert first.evidence["rule_statements"] == {"SHIP-003": "Orders of $50 or more ship free"}
 
 
-def test_a_rule_without_a_seam_points_at_its_public_entry_point(build: Any) -> None:
+def test_a_rule_without_a_seam_names_its_tests(build: Any) -> None:
     rules = RulesFile.model_validate({"rules": [{"id": "SHIP-003", "statement": "free"}]})
     first = triage(agent_gap(build), build.rule_map, rules).findings[0]
     assert first.next_action is not None
-    assert first.next_action.startswith("Test SHIP-003 through its public entry point")
+    assert first.next_action.startswith(
+        "SHIP-003 names no seam; its tests that reach this code are "
+        "`tests/rules/test_shipping_rules.py::test_small_order_pays`."
+    )
 
 
 def test_guarded_by_impl_only_is_one_finding_per_function_with_rule_pass_text(

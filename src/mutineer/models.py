@@ -1,6 +1,7 @@
 """Shared data models: rules, the diff, engine results, findings and the verdict.
 
-``Verdict`` is published as ``docs/schema/verdict.schema.json``. Change these models
+``Verdict`` is published as ``docs/schema/verdict.schema.json`` and ``AgentReport`` (the
+``--format agent`` payload) as ``docs/schema/agent.schema.json``. Change these models
 additively only (a new optional field, enum member or model); never rename, remove or
 retype anything.
 """
@@ -13,6 +14,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_VERSION = "1"
+AGENT_SCHEMA_VERSION = "1"
 
 
 class _Model(BaseModel):
@@ -104,6 +106,44 @@ class AnswersFile(_Model, extra="forbid", populate_by_name=True):
     version: Literal[1] = 1
     answers: list[Answer] = Field(default_factory=list, alias="answer")
     """TOML ``[[answer]]`` tables."""
+
+
+class Dispute(_Model, extra="forbid"):
+    """An agent's claim that a surviving mutant can't change visible behaviour.
+
+    Kept in ``.mutineer/disputes.toml``. Keyed by (function, original, mutated): the mutmut
+    name is unique and stable while the function keeps its module and name, and the two
+    texts identify the mutation without mutmut's numbering, which changes when the function
+    is edited. When the line changes, the key stops matching and the mutant is triaged as
+    usual again.
+    """
+
+    function: str
+    """mutmut name."""
+    original: str
+    """The mutated line's original text, as in ``MutantResult``."""
+    mutated: str
+    rules: list[str] = []
+    """The finding's rule ids, sorted. For readers only."""
+    reason: str
+    """The agent's, one line."""
+    status: Literal["open", "confirmed", "rejected"] = "open"
+    response: str | None = None
+    """The human's reason; required for ``rejected``."""
+    file: str | None = None
+    """For readers only."""
+    line: int | None = None
+    """For readers only."""
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.function, self.original, self.mutated)
+
+
+class DisputesFile(_Model, extra="forbid", populate_by_name=True):
+    version: Literal[1] = 1
+    disputes: list[Dispute] = Field(default_factory=list, alias="dispute")
+    """TOML ``[[dispute]]`` tables."""
 
 
 # ---- diff ----
@@ -228,7 +268,8 @@ class Score(_Model):
     killed: int
     total: int
     """Killed, survived and no-tests mutants. Inconclusive ones (timeout, suspicious,
-    skipped, ...) count in neither ``killed`` nor ``total``."""
+    skipped, ...) and survivors whose dispute a human confirmed count in neither ``killed``
+    nor ``total``."""
 
 
 class Verdict(_Model):
@@ -247,5 +288,45 @@ class Verdict(_Model):
 def verdict_json_schema() -> dict[str, Any]:
     """The JSON schema checked in as ``docs/schema/verdict.schema.json``."""
     schema = Verdict.model_json_schema(mode="serialization")
+    schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+    return schema
+
+
+# ---- agent payload ----
+
+
+class AgentFinding(_Model):
+    """One agent-audience finding as ``--format agent`` prints it.
+
+    ``location`` and ``next_action`` are left out of the JSON when None, and ``location``
+    drops its None fields.
+    """
+
+    id: str
+    kind: str
+    rules: list[str]
+    location: Location | None = None
+    message: str
+    evidence: dict[str, Any]
+    next_action: str | None = None
+
+
+class AgentReport(_Model, json_schema_serialization_defaults_required=True):
+    """The ``--format agent`` payload: what the implementing agent does next."""
+
+    schema_version: str = AGENT_SCHEMA_VERSION
+    status: Literal["pass", "warn", "block"]
+    rule_score: Score | None
+    diff_score: Score | None
+    instruction: str
+    next_command: str | None
+    """The command to run after acting on ``instruction``; None when a human must act or
+    nothing is left to do."""
+    findings: list[AgentFinding]
+
+
+def agent_json_schema() -> dict[str, Any]:
+    """The JSON schema checked in as ``docs/schema/agent.schema.json``."""
+    schema = AgentReport.model_json_schema(mode="serialization")
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
     return schema

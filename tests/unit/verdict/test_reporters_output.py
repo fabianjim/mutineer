@@ -61,7 +61,15 @@ def test_json_is_the_full_verdict(build: Any) -> None:
 @pytest.mark.rule("TRIAGE-001")
 def test_agent_output_has_only_agent_findings(build: Any) -> None:
     payload = stdjson.loads(agent.render(mixed_verdict(build)))
-    assert set(payload) == {"status", "rule_score", "diff_score", "instruction", "findings"}
+    assert set(payload) == {
+        "schema_version",
+        "status",
+        "rule_score",
+        "diff_score",
+        "instruction",
+        "next_command",
+        "findings",
+    }
     assert [f["kind"] for f in payload["findings"]] == ["survivor_rule"]
     assert payload["findings"][0]["location"] == {"file": "src/shop/shipping.py", "line": 8}
     assert payload["findings"][0]["next_action"] == "Test SHIP-003 through `shop.shipping.quote`."
@@ -82,6 +90,11 @@ def test_agent_instruction_depends_on_what_is_left(build: Any) -> None:
     broken = build.finding("block", kind="baseline_failed", check="mutation")
     assert instruction(broken) == agent.BROKEN_SUITE_INSTRUCTION
     assert instruction(broken, build.finding("block")) == agent.BLOCKED_INSTRUCTION
+    disputed = build.finding("warn", kind="mutant_disputed", check="mutation")
+    assert instruction(disputed) == agent.DISPUTES_PENDING_INSTRUCTION
+    assert instruction(work, disputed) == agent.WORK_INSTRUCTION
+    confirmed = build.finding("info", kind="mutant_disputed", check="mutation")
+    assert instruction(confirmed) == agent.DONE_INSTRUCTION
 
 
 ##

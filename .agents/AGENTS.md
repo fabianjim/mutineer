@@ -18,7 +18,8 @@ from implementation detail, and catches tests that were weakened to get green.
 `mutineer run` takes the diff from `git merge-base <base> HEAD` to the files on disk
 (uncommitted and untracked files count), runs tamper detection on the changed tests,
 collects the rule map with pytest, runs mutmut on the changed functions (twice), triages the
-mutants, and renders one verdict. `recheck` reruns the agent's survivors; `rules check`
+mutants, and renders one verdict. `recheck` reruns the agent's undisputed survivors;
+`dispute` (agent) and `resolve` (human) manage `.mutineer/disputes.toml`; `rules check`
 validates the rules file; `rules propose`/`reject` (agent) manage
 `.mutineer/proposals.toml`; `rules accept`/`dismiss` (human) turn proposals into rules and
 record answers; `init` writes a template and never overwrites. `init` and `rules accept`
@@ -45,6 +46,11 @@ reasons for them:
 - **Triage:** survived in both passes → `survivor_rule` for the agent (WARN); caught only by
   an implementation test → `guarded_by_impl_only` for a human; not rule-covered →
   `survivor_unowned` for a human; timeouts and other unclear results count in no score.
+  A disputed `survivor_rule` is `mutant_disputed` for a human (WARN while open, INFO and in
+  no score once confirmed; rejected, it is a `survivor_rule` again). A dispute is keyed by
+  the mutmut function name plus the original and mutated text, never the mutant number.
+- **`--format agent`** follows `models.AgentReport`, checked in as
+  `docs/schema/agent.schema.json` (`scripts/export_schema.py`).
 - **Growing the ledger.** Agents propose (`rules propose`) and never mark a test with an
   id that isn't accepted: triage takes rule ids from the rule map, and
   `--mutineer-rule-only` keeps any marked test, so it would send `survivor_rule` work and
@@ -103,7 +109,8 @@ reasons for them:
 - Tests that prove a rule in `.mutineer/rules.toml` carry `@pytest.mark.rule("<ID>")`. Never
   weaken, skip or delete one without the human changing that rule. Mutineer blocks it.
   Never edit `.mutineer/rules.toml` yourself; propose rules with `mutineer rules propose`,
-  and never run `rules accept` or `rules dismiss`.
+  and never run `rules accept`, `rules dismiss` or `resolve`. Mark a new test that proves
+  an accepted rule with that rule.
 - Never assert on mutmut mutant numbers (`__mutmut_3`); assert on the mutated source text.
 - Unit tests go in `tests/unit/`; end-to-end tests in `tests/e2e/`, marked
   `@pytest.mark.slow` and built on `tests/fixtures/make_fixture.sh`.

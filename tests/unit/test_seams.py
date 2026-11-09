@@ -6,7 +6,7 @@ import textwrap
 
 import pytest
 
-from mutineer.seams import seam_problem
+from mutineer.seams import seam_problem, seam_reach
 
 PRICING = """\
 import os
@@ -121,3 +121,89 @@ def test_unparsable_module(project):
 
 def test_not_a_dotted_path(project):
     assert "must be a dotted path" in (seam_problem(project, "shop..pricing") or "")
+
+
+##
+# seam_reach: does a rule test mention the seam
+
+
+TESTS = """\
+import pytest
+from mutineer.checks import tamper
+from mutineer.rules import compare as cmp
+
+
+def test_calls_quote():
+    assert quote(10) == 5
+
+
+@pytest.mark.parametrize("x", [1, 2])
+def test_param(x):
+    assert quote(x)
+
+
+def test_attribute():
+    assert tamper.check(None) == []
+
+
+def test_only_wiring():
+    assert main(["rules", "check"]) == 0
+
+
+def test_imports_inside():
+    from shop.shipping import quote as q
+    assert q(1)
+
+
+def quote_helper():
+    return quote(1)
+
+
+class TestShipping:
+    def test_method(self):
+        assert self.quote is None
+
+    def test_no_mention(self):
+        assert main([]) == 0
+"""
+
+
+@pytest.fixture
+def test_project(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_x.py").write_text(TESTS)
+    (tmp_path / "tests/test_broken.py").write_text("def (:\n")
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    ("seam", "node_id", "reaches"),
+    [
+        ("shop.shipping.quote", "tests/test_x.py::test_calls_quote", True),
+        ("shop.shipping.quote", "tests/test_x.py::test_param[1]", True),
+        ("mutineer.checks.tamper.check", "tests/test_x.py::test_attribute", True),
+        ("shop.shipping.quote", "tests/test_x.py::test_imports_inside", True),
+        ("shop.shipping.quote", "tests/test_x.py::TestShipping::test_method", True),
+        ("shop.shipping.quote", "tests/test_x.py::TestShipping::test_no_mention", False),
+        ("mutineer.rules.compare", "tests/test_x.py::test_only_wiring", False),
+        # a mention elsewhere in the file doesn't count
+        ("mutineer.checks.tamper.check", "tests/test_x.py::test_calls_quote", False),
+    ],
+)
+def test_a_test_reaches_the_seam_when_its_body_mentions_it(test_project, seam, node_id, reaches):
+    assert seam_reach(test_project)(seam, node_id) is reaches
+
+
+@pytest.mark.parametrize(
+    "node_id",
+    [
+        "tests/test_missing.py::test_x",
+        "tests/test_broken.py::test_x",
+        "tests/test_x.py::test_not_there",
+        "tests/test_x.py::TestMissing::test_method",
+        "tests/test_x.py::test_calls_quote::nested",
+        "tests/test_x.py::TestShipping",
+    ],
+)
+def test_when_reach_cant_be_known_the_seam_counts_as_reached(test_project, node_id):
+    assert seam_reach(test_project)("shop.shipping.quote", node_id) is True

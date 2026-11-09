@@ -5,12 +5,15 @@ It never imports or runs user code. The longest dotted prefix that is a module f
 parent of each mutmut ``source_paths`` entry. The rest of the path is resolved with
 ``ast``: a module-level ``def``, ``class``, assignment or import binds a name, and a class
 body binds its methods and attributes. Imports are not followed.
+
+``seam_reach`` answers a second, heuristic question: does a rule test exercise the seam
+directly, or only reach the code under it through wiring such as a CLI?
 """
 
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
 from mutineer.rules import mutmut_source_paths
@@ -47,6 +50,64 @@ def seam_problem(root: Path, seam: str) -> str | None:
         scope = _class_body(scope, part)
         owner = f"{owner}.{part}"
     return None
+
+
+def seam_reach(root: Path) -> Callable[[str, str], bool]:
+    """A check, bound to ``root``, that a test mentions a seam: (seam, node id) -> bool.
+
+    A test mentions ``seam`` when the seam's last dotted segment appears as a name or an
+    attribute in the test function's body (``compare`` for ``mutineer.rules.compare``,
+    ``tamper.check(...)`` for ``mutineer.checks.tamper.check``). This is a static,
+    conservative stand-in for a call graph: the test file is parsed with ``ast`` once and
+    never imported or run. When the answer can't be known (the file is unreadable or
+    unparsable, or the test isn't found), the seam counts as reached.
+    """
+    # ledger imports this module, so its helper is imported here
+    from mutineer.ledger import strip_params
+
+    trees: dict[str, ast.Module | None] = {}
+
+    def reaches(seam: str, node_id: str) -> bool:
+        path, _, rest = strip_params(node_id).partition("::")
+        if path not in trees:
+            try:
+                source = (root / path).read_text(encoding="utf-8")
+                trees[path] = ast.parse(source, filename=path)
+            except (OSError, SyntaxError, UnicodeDecodeError, ValueError):
+                trees[path] = None
+        tree = trees[path]
+        if tree is None or not rest:
+            return True
+        body: _Scope = tree.body
+        found: ast.stmt | None = None
+        for part in rest.split("::"):
+            if found is not None:
+                if not isinstance(found, ast.ClassDef):
+                    return True
+                body = found.body
+            found = next(
+                (
+                    stmt
+                    for stmt in _statements(body)
+                    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                    and stmt.name == part
+                ),
+                None,
+            )
+            if found is None:
+                return True
+        if not isinstance(found, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return True
+        name = seam.rsplit(".", 1)[-1]
+        return any(
+            (isinstance(node, ast.Name) and node.id == name)
+            or (isinstance(node, ast.Attribute) and node.attr == name)
+            or (isinstance(node, ast.alias) and name in (node.name.split(".")[-1], node.asname))
+            for stmt in found.body
+            for node in ast.walk(stmt)
+        )
+
+    return reaches
 
 
 def _search_dirs(root: Path) -> list[Path]:

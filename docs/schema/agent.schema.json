@@ -1,0 +1,191 @@
+{
+  "$defs": {
+    "AgentFinding": {
+      "description": "One agent-audience finding as ``--format agent`` prints it.\n\n``location`` and ``next_action`` are left out of the JSON when None, and ``location``\ndrops its None fields.",
+      "properties": {
+        "evidence": {
+          "additionalProperties": true,
+          "title": "Evidence",
+          "type": "object"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Location"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "next_action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next Action"
+        },
+        "rules": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Rules",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "rules",
+        "message",
+        "evidence"
+      ],
+      "title": "AgentFinding",
+      "type": "object"
+    },
+    "Location": {
+      "properties": {
+        "end_line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Line"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        }
+      },
+      "required": [
+        "file"
+      ],
+      "title": "Location",
+      "type": "object"
+    },
+    "Score": {
+      "properties": {
+        "killed": {
+          "title": "Killed",
+          "type": "integer"
+        },
+        "total": {
+          "title": "Total",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "killed",
+        "total"
+      ],
+      "title": "Score",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The ``--format agent`` payload: what the implementing agent does next.",
+  "properties": {
+    "diff_score": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Score"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/AgentFinding"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "instruction": {
+      "title": "Instruction",
+      "type": "string"
+    },
+    "next_command": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Next Command"
+    },
+    "rule_score": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Score"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema_version": {
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "warn",
+        "block"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "status",
+    "rule_score",
+    "diff_score",
+    "instruction",
+    "next_command",
+    "findings"
+  ],
+  "title": "AgentReport",
+  "type": "object"
+}

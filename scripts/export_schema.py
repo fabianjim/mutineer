@@ -1,38 +1,48 @@
-"""Write docs/schema/verdict.schema.json from the models, or check it is current.
+"""Write the JSON schemas in docs/schema/ from the models, or check they are current.
 
 uv run python scripts/export_schema.py          # write
-uv run python scripts/export_schema.py --check  # exit 1 if stale (CI)
+uv run python scripts/export_schema.py --check  # exit 1 if any is stale (CI)
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
-from mutineer.models import verdict_json_schema
+from mutineer.models import agent_json_schema, verdict_json_schema
 
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "docs" / "schema" / "verdict.schema.json"
+SCHEMA_DIR = Path(__file__).resolve().parent.parent / "docs" / "schema"
+SCHEMAS: dict[str, Callable[[], dict[str, Any]]] = {
+    "verdict.schema.json": verdict_json_schema,
+    "agent.schema.json": agent_json_schema,
+}
 
 
-def render() -> str:
-    return json.dumps(verdict_json_schema(), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+def render(schema: dict[str, Any]) -> str:
+    return json.dumps(schema, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
-def main(argv: list[str]) -> int:
-    text = render()
+def main(argv: list[str], schema_dir: Path = SCHEMA_DIR) -> int:
+    texts = {schema_dir / name: render(build()) for name, build in SCHEMAS.items()}
     if "--check" in argv:
-        current = SCHEMA_PATH.read_text(encoding="utf-8") if SCHEMA_PATH.exists() else ""
-        if current != text:
+        stale = [
+            path.name
+            for path, text in texts.items()
+            if (path.read_text(encoding="utf-8") if path.exists() else "") != text
+        ]
+        for name in stale:
             print(
-                f"{SCHEMA_PATH.name} is out of date; run `uv run python scripts/export_schema.py`",
+                f"{name} is out of date; run `uv run python scripts/export_schema.py`",
                 file=sys.stderr,
             )
-            return 1
-        return 0
-    SCHEMA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SCHEMA_PATH.write_text(text, encoding="utf-8")
-    print(f"wrote {SCHEMA_PATH}")
+        return 1 if stale else 0
+    schema_dir.mkdir(parents=True, exist_ok=True)
+    for path, text in texts.items():
+        path.write_text(text, encoding="utf-8")
+        print(f"wrote {path}")
     return 0
 
 

@@ -52,6 +52,13 @@ def detail_lines(f: Finding, code: Callable[[str], str]) -> list[str]:
         for loc in locations:
             if isinstance(loc, dict):
                 out.append(f"{_lines(loc)}: {loc.get('reason')}")
+    dispute = ev.get("dispute")
+    if isinstance(dispute, dict) and f.kind in ("mutant_disputed", "survivor_rule"):
+        if f.kind == "mutant_disputed":
+            out.append(_change(ev, code))
+        out.append(f"dispute: {dispute.get('reason')}")
+        if dispute.get("response"):
+            out.append(f"response: {dispute['response']}")
     tests = ev.get("tests")
     if f.check == "rules" and isinstance(tests, list):
         out += [f"test: {code(str(t))}" for t in tests]
@@ -84,23 +91,47 @@ def _lines(loc: dict[str, Any]) -> str:
 
 
 ANSWERED_TITLE = "Already answered"
-"""The last group of the human reports: questions a human already said no to."""
+"""The last group of the human reports: questions a human already said no to, and disputes
+a human confirmed."""
+
+
+def is_answered(f: Finding) -> bool:
+    """A question a human already answered: dismissed, or a confirmed dispute."""
+    if "answer" in f.evidence:
+        return True
+    dispute = f.evidence.get("dispute")
+    return (
+        f.kind == "mutant_disputed"
+        and isinstance(dispute, dict)
+        and dispute.get("status") == "confirmed"
+    )
 
 
 def split_answered(findings: list[Finding]) -> tuple[list[Finding], list[Finding]]:
     """``findings`` without the answered questions, and the answered ones, in order."""
-    main = [f for f in findings if "answer" not in f.evidence]
-    answered = [f for f in findings if "answer" in f.evidence]
+    main = [f for f in findings if not is_answered(f)]
+    answered = [f for f in findings if is_answered(f)]
     return main, answered
 
 
 def answered_parts(f: Finding) -> tuple[str, str, str, str]:
-    """Location, name, mutant count and reason of an answered question."""
+    """Location, name, mutant count and reason of an answered question.
+
+    For a confirmed dispute the reason is the agent's.
+    """
     ev = f.evidence
     name = ev.get("qualname") or ev.get("function") or f.kind
     mutants = ev.get("mutants")
-    n = len(mutants) if isinstance(mutants, list) else 0
+    # a dispute is about one mutant
+    many = len(mutants) if isinstance(mutants, list) else 0
+    n = 1 if f.kind == "mutant_disputed" else many
     count = f"{n} mutant" if n == 1 else f"{n} mutants"
     answer = ev.get("answer")
-    reason = answer.get("reason", "") if isinstance(answer, dict) else ""
+    dispute = ev.get("dispute")
+    if isinstance(answer, dict):
+        reason = answer.get("reason", "")
+    elif isinstance(dispute, dict):
+        reason = dispute.get("reason", "")
+    else:
+        reason = ""
     return where(f) or "", str(name), count, str(reason)

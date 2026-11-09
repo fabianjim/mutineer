@@ -18,14 +18,19 @@ import typer
 from mutineer.errors import MutineerError
 
 
-def confirm_human(action: str, changes: list[str], *, yes: bool) -> None:
-    """Return when the human agrees to ``changes``; raise ``MutineerError`` (exit 4) otherwise."""
+def confirm_human(
+    action: str, changes: list[str], *, yes: bool, command: str | None = None
+) -> None:
+    """Return when the human agrees to ``changes``; raise ``MutineerError`` (exit 4) otherwise.
+
+    The refusal names ``mutineer {command}``; ``command`` defaults to ``rules {action}``.
+    """
     if yes:
         return
     if not sys.stdin.isatty():
+        name = command if command is not None else f"rules {action}"
         raise MutineerError(
-            f"`mutineer rules {action}` records a human decision; run it in a terminal, "
-            "or pass --yes"
+            f"`mutineer {name}` records a human decision; run it in a terminal, or pass --yes"
         )
     for change in changes:
         typer.echo(change)

@@ -18,10 +18,18 @@ from mutineer.config import Config, load_config
 from mutineer.engine import Engine
 from mutineer.engine.mutmut_engine import MutmutEngine
 from mutineer.errors import CollectionError, RulesError
-from mutineer.ledger import ANSWERS_FILE, Ledger, answer_findings, load_ledger
+from mutineer.ledger import (
+    ANSWERS_FILE,
+    DISPUTES_FILE,
+    Ledger,
+    answer_findings,
+    dispute_findings,
+    load_ledger,
+)
 from mutineer.models import Diff, EngineRun, Finding, RuleMap, RulesFile, Verdict
 from mutineer.reporters import agent, json, markdown, terminal
 from mutineer.rules import collect_rule_map, compare, load_rules, rule_findings
+from mutineer.seams import seam_reach
 from mutineer.triage import Triage, collection_failed, triage
 from mutineer.verdict import decide, exit_code
 
@@ -55,7 +63,13 @@ def run(
     result = Triage(findings=[], rule_score=None, diff_score=None)
     if not no_mutation and not checked.suite_broken:
         engine_run = make_engine().run(checked.diff, checked.rule_map, root)
-        result = triage(engine_run, checked.rule_map, checked.rules, ledger=checked.ledger)
+        result = triage(
+            engine_run,
+            checked.rule_map,
+            checked.rules,
+            ledger=checked.ledger,
+            seam_reached=seam_reach(root),
+        )
 
     verdict = decide(
         [*checked.findings, *result.findings],
@@ -97,17 +111,18 @@ class StaticChecks:
     suite_broken: bool = False
     """pytest couldn't collect the tests; ``findings`` holds a ``baseline_failed`` BLOCK."""
     ledger: Ledger = field(default_factory=Ledger)
-    """Pending proposals and human answers, which triage shows on its questions."""
+    """Pending proposals, human answers and disputes, which triage applies."""
 
 
 def static_checks(root: Path, config: Config, base_ref: str) -> StaticChecks:
     """Load the diff and rules, collect the rule map, and run tamper and the rules checks.
 
-    Also loads the ledger (proposals and answers) and reports each answer added or changed
-    since the merge-base as ``answer_added``.
+    Also loads the ledger (proposals, answers and disputes), and reports each answer added
+    or changed since the merge-base as ``answer_added`` and each dispute newly confirmed
+    since then as ``dispute_confirmed``.
 
     Raises ``RulesError`` when a rule id was deleted from the rules file, or when the
-    proposals or answers file is invalid. When pytest can't
+    proposals, answers or disputes file is invalid. When pytest can't
     collect the tests, the suite is broken: the result holds a ``baseline_failed`` BLOCK
     instead of the rule findings (the rule map is unknown), and ``suite_broken`` is set so
     callers skip mutation. Tamper detection reads files only, so it still runs.
@@ -121,7 +136,10 @@ def static_checks(root: Path, config: Config, base_ref: str) -> StaticChecks:
     answers_added = answer_findings(
         gitdiff.read_base_file(root, diff.base, ANSWERS_FILE), recorded.answers
     )
-    rules_changes = [*rules_changes, *answers_added]
+    disputes_confirmed = dispute_findings(
+        gitdiff.read_base_file(root, diff.base, DISPUTES_FILE), recorded.disputes
+    )
+    rules_changes = [*rules_changes, *answers_added, *disputes_confirmed]
     test_paths = _test_paths(root, diff.base, config)
     tamper_findings = tamper.check(diff, root, head_rules, test_paths=test_paths)
     try:

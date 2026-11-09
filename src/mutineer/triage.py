@@ -45,17 +45,33 @@ With a ``Ledger``, the two questions for a human (``survivor_unowned`` and
   the rule set must also be the same, so a changed rule set asks again.
 
 A proposal takes precedence over an answer. Neither changes kind, severity or audience.
+
+An agent may dispute a ``survivor_rule`` mutant it believes can't change visible behaviour
+(``.mutineer/disputes.toml``). A dispute is keyed by (mutmut name, original text, mutated
+text), not by mutmut's mutant number, which changes when the function is edited; when the
+line changes the key stops matching and the mutant is triaged as usual. Only a mutant
+that would be a ``survivor_rule`` is affected:
+
+=========  ======================  ===============  ===============  ========
+dispute    finding                 severity         ``recheck``      scores
+=========  ======================  ===============  ===============  ========
+none       ``survivor_rule``       WARN, agent      reruns it        survived
+open       ``mutant_disputed``     WARN, human      skips it         survived
+confirmed  ``mutant_disputed``     INFO, human      skips it         none
+rejected   ``survivor_rule``       WARN, agent      reruns it        survived
+=========  ======================  ===============  ===============  ========
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from mutineer.ledger import Ledger, strip_params
 from mutineer.models import (
     Audience,
+    Dispute,
     EngineRun,
     Finding,
     FunctionRef,
@@ -81,12 +97,6 @@ _GROUP: dict[MutantStatus, Group] = {
 _LOST: frozenset[Group] = frozenset({"S", "N"})
 """Not caught: survived, or no test ran."""
 
-SEAM_GUIDANCE = (
-    "Test the promised behaviour through the seam. Don't assert on private names or mocks. "
-    "If the mutant can't change behaviour visible through the seam, don't write a test; "
-    "say so."
-)
-
 
 def status_group(status: MutantStatus | None) -> Group:
     """The triage group of a status; a missing status is inconclusive."""
@@ -104,6 +114,9 @@ class Triage:
     """All pass over every changed function; None when the baseline failed."""
     survivor_names: list[str] = field(default_factory=list)
     """Mutant names of the ``survivor_rule`` findings, which ``recheck`` reruns."""
+
+
+DisputeKey = tuple[str, str, str]
 
 
 @dataclass
@@ -135,6 +148,13 @@ class _Mutant:
         assert r is not None
         return r
 
+    @property
+    def key(self) -> DisputeKey | None:
+        """The dispute key, or None when the text is unknown (it then matches nothing)."""
+        if self.original is None or self.mutated is None:
+            return None
+        return (self.function, self.original, self.mutated)
+
     def evidence(self) -> dict[str, Any]:
         return {
             "mutant": self.name,
@@ -147,13 +167,23 @@ class _Mutant:
 
 
 def triage(
-    run: EngineRun, rule_map: RuleMap, rules: RulesFile, *, ledger: Ledger | None = None
+    run: EngineRun,
+    rule_map: RuleMap,
+    rules: RulesFile,
+    *,
+    ledger: Ledger | None = None,
+    seam_reached: Callable[[str, str], bool] | None = None,
 ) -> Triage:
     """Findings and scores for ``run``, with rule coverage from ``rule_map``.
 
+    ``seam_reached`` answers (seam, rule test node id) -> does that test exercise the seam
+    (``seams.seam_reach``). A ``survivor_rule`` whose rule tests never do names those
+    tests instead of the seam. Without it, every seam counts as reaching.
+
     With ``ledger``, the questions for a human carry their tests, any pending proposal or
     human answer, and a ``next_action`` naming the commands that answer them. Without it,
-    they read as they did before answers existed.
+    they read as they did before answers existed. Its disputes turn matching survivors
+    into ``mutant_disputed`` questions, or annotate them when rejected.
     """
     unmeasured = _unmeasured(run)
     if run.baseline_failed:
@@ -161,6 +191,7 @@ def triage(
         return Triage([_baseline_failed(run), *unmeasured], rule_score=None, diff_score=None)
 
     refs = {f.mutmut_name: f for f in run.functions}
+    disputes = _disputes(ledger)
     rules_by_id = {r.id: r for r in rules.rules}
     mutants = _mutants(run.results)
     by_function: dict[str, list[_Mutant]] = {}
@@ -172,6 +203,8 @@ def triage(
     unreached = set(run.unreached)
 
     survivors: list[Finding] = []
+    disputed: list[Finding] = []
+    unscored: set[str] = set()
     guarded: list[Finding] = []
     inconclusive: list[Finding] = []
     unowned: list[Finding] = []
@@ -206,6 +239,7 @@ def triage(
         any_rule_covered = True
         impl_only: list[_Mutant] = []
         unsure = []
+        reach: list[_Reach] | None = None
         for m in fn_mutants:
             a, r = status_group(_status(m.all)), status_group(_status(m.rule))
             if r == "K":
@@ -217,8 +251,22 @@ def triage(
             elif a == "K" and r in _LOST:
                 impl_only.append(m)
             elif a in _LOST:  # r is lost too here
-                survivors.append(_survivor_rule(m, ref, rule_ids, rule_tests, rules_by_id))
-                survivor_names.append(m.name)
+                if reach is None:
+                    reach = _seam_reach(rule_ids, rule_tests, rule_map, rules_by_id, seam_reached)
+                finding = _survivor_rule(m, ref, rule_ids, rule_tests, rules_by_id, reach)
+                dispute = disputes.get(m.key) if m.key is not None else None
+                if dispute is None:
+                    survivors.append(finding)
+                    survivor_names.append(m.name)
+                elif dispute.status == "rejected":
+                    survivors.append(_rejected(finding, dispute))
+                    survivor_names.append(m.name)
+                else:
+                    disputed.append(_disputed(finding, m, ref, dispute))
+                    if dispute.status == "confirmed":
+                        # counted as lost above; a confirmed one counts in no score
+                        rule_total -= 1
+                        unscored.add(m.name)
         if impl_only:
             finding = _guarded(fn, ref, impl_only, rule_ids)
             if ledger is not None:
@@ -230,13 +278,17 @@ def triage(
 
     diff_killed = diff_total = 0
     for m in mutants:
+        if m.name in unscored:
+            continue
         g = status_group(_status(m.all))
         diff_killed += g == "K"
         diff_total += g != "I"
 
     survivors.sort(key=_location_key)
+    disputed.sort(key=_location_key)
     findings = [
         *survivors,
+        *disputed,
         *guarded,
         *inconclusive,
         *unowned,
@@ -251,7 +303,28 @@ def triage(
     )
 
 
+def disputed_names(run: EngineRun, ledger: Ledger) -> set[str]:
+    """Names of mutants in ``run`` that an open or confirmed dispute matches.
+
+    ``recheck`` leaves them out of its rerun: they wait for a human, or a human agreed.
+    """
+    disputes = _disputes(ledger)
+    return {
+        m.name
+        for m in _mutants(run.results)
+        if m.key is not None
+        and (d := disputes.get(m.key)) is not None
+        and d.status in ("open", "confirmed")
+    }
+
+
 # ---- helpers ----
+
+
+def _disputes(ledger: Ledger | None) -> dict[DisputeKey, Dispute]:
+    if ledger is None:
+        return {}
+    return {d.key: d for d in ledger.disputes.disputes}
 
 
 def _status(r: MutantResult | None) -> MutantStatus | None:
@@ -291,11 +364,76 @@ def _count(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
-def _seam_phrase(rule_id: str, rules_by_id: dict[str, Rule]) -> str:
-    rule = rules_by_id.get(rule_id)
-    if rule is not None and rule.seam:
-        return f"{rule_id} through `{rule.seam}`"
-    return f"{rule_id} through its public entry point (the rule names no seam)"
+@dataclass(frozen=True)
+class _Reach:
+    """Whether rule ``rule_id``'s seam reaches a function, and its tests that cover it."""
+
+    rule_id: str
+    seam: str | None
+    reaches: bool
+    tests: list[str]
+
+
+def _seam_reach(
+    rule_ids: list[str],
+    rule_tests: list[str],
+    rule_map: RuleMap,
+    rules_by_id: dict[str, Rule],
+    seam_reached: Callable[[str, str], bool] | None,
+) -> list[_Reach]:
+    """Per rule: its seam reaches when one of its covering tests mentions it.
+
+    A rule with no seam never reaches. With no ``seam_reached``, every seam reaches.
+    """
+    out = []
+    for rule_id in rule_ids:
+        rule = rules_by_id.get(rule_id)
+        seam = rule.seam if rule is not None and rule.seam else None
+        tests = sorted(t for t in rule_tests if rule_id in rule_map.get(t, []))
+        if seam is None:
+            reaches = False
+        elif seam_reached is None:
+            reaches = True
+        else:
+            reaches = any(seam_reached(seam, t) for t in tests)
+        out.append(_Reach(rule_id, seam, reaches, tests))
+    return out
+
+
+def _survivor_guidance(reach: list[_Reach], where: str) -> str:
+    """The ``next_action`` of a ``survivor_rule``: how to test it, then how to mark it."""
+    parts = []
+    for r in reach:
+        tests = ", ".join(f"`{t}`" for t in r.tests)
+        if r.reaches:
+            parts.append(
+                f"Test {r.rule_id} through `{r.seam}` so that this change to {where} fails."
+            )
+        elif r.seam is not None:
+            parts.append(
+                f"`{r.seam}` doesn't reach this code; {r.rule_id}'s tests that do are {tests}. "
+                f"Test the promised behaviour the way they do, so that this change to {where} "
+                "fails."
+            )
+        else:
+            parts.append(
+                f"{r.rule_id} names no seam; its tests that reach this code are {tests}. Test "
+                f"the promised behaviour the way they do, so that this change to {where} fails."
+            )
+    if len(reach) > 1:
+        parts.insert(0, "Any one of these rules will do.")
+        mark = "<the rule you tested>"
+    else:
+        mark = reach[0].rule_id
+    parts.append(
+        f'Mark the new test @pytest.mark.rule("{mark}") with that existing rule; an unmarked '
+        "test can't clear this finding. Don't mark tests that only exercise wiring, and never "
+        "mark with an id that isn't in the rules file. Don't assert on private names or mocks. "
+        "Only if no caller can observe the change, run mutineer dispute <this finding's id> "
+        '"<why>"; "the seam doesn\'t reach this code" is a valid reason when the rule tests '
+        "reach it only through wiring."
+    )
+    return " ".join(parts)
 
 
 def _survivor_rule(
@@ -304,17 +442,15 @@ def _survivor_rule(
     rule_ids: list[str],
     rule_tests: list[str],
     rules_by_id: dict[str, Rule],
+    reach: list[_Reach],
 ) -> Finding:
     where = f"line {m.line}" if m.line is not None else "this function"
-    if m.original is not None and m.mutated is not None:
-        change = f"`{m.original}` changed to `{m.mutated}`"
-    else:
-        change = f"mutant `{m.name}`"
-    seams = " or ".join(_seam_phrase(i, rules_by_id) for i in rule_ids)
+    change = _change(m)
     evidence = m.evidence() | {
         "function": m.function,
         "rule_tests": rule_tests,
         "rule_statements": {i: rules_by_id[i].statement for i in rule_ids if i in rules_by_id},
+        "seams": {r.rule_id: {"seam": r.seam, "reaches": r.reaches} for r in reach},
     }
     return Finding(
         check="mutation",
@@ -327,7 +463,66 @@ def _survivor_rule(
             f"Nothing catches this: {change} in {_name(m.function, ref)} and every test passes."
         ),
         evidence=evidence,
-        next_action=f"Test {seams} so that this change to {where} fails. {SEAM_GUIDANCE}",
+        next_action=_survivor_guidance(reach, where),
+    )
+
+
+def _change(m: _Mutant) -> str:
+    if m.original is not None and m.mutated is not None:
+        return f"`{m.original}` changed to `{m.mutated}`"
+    return f"mutant `{m.name}`"
+
+
+def _dispute_evidence(d: Dispute) -> dict[str, Any]:
+    return {"reason": d.reason, "status": d.status, "response": d.response}
+
+
+def _rejected(f: Finding, d: Dispute) -> Finding:
+    """``f`` (a ``survivor_rule``) whose dispute a human rejected: the agent must test it."""
+    return f.model_copy(
+        update={
+            "evidence": f.evidence | {"dispute": _dispute_evidence(d)},
+            "next_action": (
+                f'A human rejected the dispute of this mutant ("{d.response}"), so it matters: '
+                f"{f.next_action}"
+            ),
+        }
+    )
+
+
+def _disputed(f: Finding, m: _Mutant, ref: FunctionRef | None, d: Dispute) -> Finding:
+    """``f`` (a ``survivor_rule``) as a ``mutant_disputed`` question for a human."""
+    evidence = f.evidence | {"dispute": _dispute_evidence(d)}
+    if ref is not None:
+        evidence["qualname"] = ref.qualname
+    name = _name(m.function, ref)
+    if d.status == "confirmed":
+        severity = Severity.INFO
+        message = (
+            f"A human confirmed the agent's dispute: {_change(m)} in {name} can't change "
+            f'visible behaviour ("{d.reason}"), so it counts in no score.'
+        )
+        action = "Nothing to do; remove the dispute from .mutineer/disputes.toml to ask again."
+    else:
+        severity = Severity.WARN
+        message = (
+            f"The agent disputes this survivor: {_change(m)} in {name} survives every test, "
+            f'and the agent says "{d.reason}".'
+        )
+        action = (
+            "A human decides: if the change can't alter promised behaviour, run mutineer "
+            "resolve <this finding's id> --confirm; if it can, run mutineer resolve <this "
+            'finding\'s id> --reject --reason "<why>" and the agent tests it.'
+        )
+    return f.model_copy(
+        update={
+            "kind": "mutant_disputed",
+            "severity": severity,
+            "audience": Audience.HUMAN,
+            "message": message,
+            "evidence": evidence,
+            "next_action": action,
+        }
     )
 
 
@@ -535,4 +730,10 @@ def _baseline_failed(run: EngineRun) -> Finding:
     )
 
 
-__all__ = ["SEAM_GUIDANCE", "Triage", "collection_failed", "status_group", "triage"]
+__all__ = [
+    "Triage",
+    "collection_failed",
+    "disputed_names",
+    "status_group",
+    "triage",
+]

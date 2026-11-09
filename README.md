@@ -94,10 +94,10 @@ mutineer rules accept SHIP-001   # human: appends the rule, marks its tests
   `guarded_by_impl_only` question from the last run (use the finding's
   `evidence.function`). Later runs still list the finding, under "Already answered".
 
-Commit rules.toml, `.mutineer/proposals.toml` and `.mutineer/answers.toml`; only
-`.mutineer/last-run.json` is ignored.
+Commit rules.toml, `.mutineer/proposals.toml`, `.mutineer/answers.toml` and
+`.mutineer/disputes.toml`; only `.mutineer/last-run.json` is ignored.
 
-`accept` and `dismiss` record a human decision: without a terminal they refuse unless you
+`accept`, `dismiss` and `resolve` record a human decision: without a terminal they refuse unless you
 pass `--yes`. That is a convention, not a security boundary; the protection is that every
 change shows up in the next run as a finding (`rules_file_changed`, `answer_added`).
 
@@ -107,6 +107,8 @@ change shows up in the next run as a finding (`rules_file_changed`, `answer_adde
 mutineer run                     # judge the diff from the merge-base to the working tree
 mutineer run --format agent      # compact JSON for the implementing agent
 mutineer recheck --format agent  # after the agent adds tests: rerun only its survivors
+mutineer dispute ID "<why>"      # agent: a survivor_rule no caller can observe
+mutineer resolve ID... --confirm # human: agree (or --reject --reason TEXT)
 mutineer rules check             # validate rules.toml and list each rule's tests
 mutineer rules propose ...       # agent: propose a rule (or --batch FILE)
 mutineer rules reject ID...      # drop pending proposals
@@ -120,7 +122,7 @@ mutineer rules dismiss FN... --reason TEXT  # human: answer no to a question
 
 | Option | |
 |---|---|
-| `--format terminal\|markdown\|json\|agent` | terminal (default), a PR comment, the full verdict, or agent JSON |
+| `--format terminal\|markdown\|json\|agent` | terminal (default), a PR comment, the full verdict, or agent JSON (schema: `docs/schema/agent.schema.json`) |
 | `--output FILE` | write the report to a file instead of stdout |
 | `--no-mutation` | tamper and rules checks only; no mutmut run, no scores |
 | `--strict` | exit 1 on warn |
@@ -133,8 +135,8 @@ Every run ends in one status:
 - **block**: a rule test was tampered with and the rules file doesn't change that rule,
   or the test suite fails on its own (including a test file or `conftest.py` pytest can't
   collect).
-- **warn**: a mutant in code a rule test covers survives every test, or a warn-level
-  tamper or rules finding.
+- **warn**: a mutant in code a rule test covers survives every test, an agent's dispute
+  waits for a human, or a warn-level tamper or rules finding.
 - **pass**: none of the above. Questions for a human are listed but never change the
   status.
 
@@ -144,7 +146,8 @@ Two scores sit beside it:
   tests alone. The headline number.
 - **diff score**: mutants in all changed functions, killed by any test.
 
-Timeouts and other inconclusive mutants count in neither score. Changed lines mutmut
+Timeouts, other inconclusive mutants and equivalent mutants a human confirmed count in
+neither score. Changed lines mutmut
 can't mutate (decorated functions, module-level code, excluded files) are reported as
 `unmeasured_change` and never count as tested.
 
@@ -161,15 +164,21 @@ against rule tests only.
 
 Survivors in code no rule covers become `survivor_unowned` ("Is this behaviour a
 promise?"), and a changed function no test reaches is `unreached`. Both are for a human.
+A `survivor_rule` the agent disputed becomes `mutant_disputed`, for a human to confirm or
+reject; a rejected one goes back to the agent.
 
 ### The agent loop
 
 1. The agent runs `mutineer run --format agent`.
-2. For each `survivor_rule` finding, it writes a test through the named seam, or says
-   why the mutant can't change visible behaviour.
-3. It runs `mutineer recheck --format agent`, which reruns only those mutants with the
-   rule tests and checks for tampering again.
-4. After `max_rounds` rechecks with survivors left, `recheck` exits 3: a human takes over.
+2. For each `survivor_rule` finding, it writes a test through the named seam and marks it
+   with the finding's rule (an unmarked test can't clear it). Only if no caller can observe
+   the change does it run `mutineer dispute ID "<why>"` instead; a human then runs
+   `mutineer resolve ID --confirm`, or `--reject --reason TEXT` to send it back.
+3. It runs `next_command` from the report, `mutineer recheck --format agent`, which reruns
+   only the undisputed survivors with the rule tests and checks for tampering again.
+4. The agent is done when no undisputed `survivor_rule` is left; `next_command` is then
+   null, as it is when a human must act. After `max_rounds` rechecks with survivors left,
+   `recheck` exits 3: a human takes over.
 
 `recheck` exits 4 if there's no previous run, or if the merge-base moved since then; run
 `mutineer run` again in that case.
@@ -188,7 +197,8 @@ promise?"), and a changed function no test reaches is `unreached`. Both are for 
 
 `run` and `recheck` write only to `mutants/` (mutmut's working directory) and
 `.mutineer/last-run.json` (the state `recheck` reads), unless you pass `--output`.
-`rules propose`, `reject` and `dismiss` write only in `.mutineer/`. Only the commands you
+`rules propose`, `reject` and `dismiss`, `dispute` and `resolve` write only in
+`.mutineer/`. Only the commands you
 run yourself write elsewhere: `init` (`.gitignore`) and `rules accept` (the rules file and
 rule markers in tests).
 

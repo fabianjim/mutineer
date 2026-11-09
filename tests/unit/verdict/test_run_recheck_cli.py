@@ -472,3 +472,100 @@ def test_a_weakened_rule_test_under_a_configured_test_path_blocks(
     out = json.loads(capsys.readouterr().out)
     blocks = [f for f in out["findings"] if f["severity"] == "block"]
     assert [f["location"]["file"] for f in blocks] == ["spec/test_spec.py"]
+
+
+##
+# disputes
+
+
+def _dispute(n: int, status: str = "open") -> str:
+    response = '\nresponse = "it matters"' if status == "rejected" else ""
+    return (
+        f'[[dispute]]\nfunction = "{FN}"\noriginal = "return x * 2"\n'
+        f'mutated = "return x * {n + 2}"\nreason = "same result for the inputs"\n'
+        f'status = "{status}"{response}\n'
+    )
+
+
+def _write_disputes(project: Any, *disputes: str) -> None:
+    project.write(".mutineer/disputes.toml", "version = 1\n\n" + "\n".join(disputes))
+
+
+def _kinds(out: dict[str, Any]) -> list[str]:
+    return [f["kind"] for f in out["findings"]]
+
+
+def test_recheck_skips_an_open_disputed_mutant(
+    project: Any, engine: FakeEngine, capsys: Any
+) -> None:
+    main(["run"])
+    _write_disputes(project, _dispute(2))
+    capsys.readouterr()
+    assert main(["recheck", "--format", "json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert engine.reruns == [[f"{FN}__mutmut_1"]]
+    # mutmut_1 is now killed by the rule pass only, which is inconclusive
+    assert sorted(_kinds(out)) == ["mutant_disputed", "mutant_inconclusive"]
+    assert out["status"] == "warn"
+    saved = state.load(project.path)
+    assert saved is not None
+    assert (saved.rounds, saved.survivor_names) == (1, [])
+
+
+def test_recheck_with_only_disputed_survivors_retriages_for_free(
+    project: Any, engine: FakeEngine, capsys: Any
+) -> None:
+    main(["run"])
+    _write_disputes(project, _dispute(1), _dispute(2))
+    capsys.readouterr()
+    for _ in range(3):
+        assert main(["recheck", "--max-rounds", "1", "--format", "json"]) == 0
+    assert engine.reruns == []
+    saved = state.load(project.path)
+    assert saved is not None
+    assert (saved.rounds, saved.survivor_names) == (0, [])
+    assert [f.kind for f in saved.verdict.findings] == ["mutant_disputed", "mutant_disputed"]
+    assert saved.verdict.status == "warn"
+
+
+def test_a_dispute_resolved_after_the_run_changes_the_recheck(
+    project: Any, engine: FakeEngine, capsys: Any
+) -> None:
+    _write_disputes(project, _dispute(1), _dispute(2))
+    main(["run", "--format", "json"])
+    assert json.loads(capsys.readouterr().out)["status"] == "warn"
+
+    _write_disputes(project, _dispute(1, "confirmed"), _dispute(2, "confirmed"))
+    assert main(["recheck", "--format", "json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "pass"
+    assert sorted(_kinds(out)) == ["dispute_confirmed"] * 2 + ["mutant_disputed"] * 2
+    assert out["rule_score"] == {"killed": 1, "total": 1}
+    assert engine.reruns == []
+
+    _write_disputes(project, _dispute(1, "rejected"), _dispute(2, "confirmed"))
+    assert main(["recheck", "--format", "agent"]) == 0
+    out = agent_json(capsys)
+    assert out["status"] == "warn"
+    assert [f["evidence"]["mutant"] for f in out["findings"]] == [f"{FN}__mutmut_1"]
+    assert engine.reruns == []
+    saved = state.load(project.path)
+    assert saved is not None
+    assert (saved.rounds, saved.survivor_names) == (0, [f"{FN}__mutmut_1"])
+
+    assert main(["recheck", "--format", "agent"]) == 0
+    assert engine.reruns == [[f"{FN}__mutmut_1"]]
+
+
+def test_dispute_confirmed_is_reported_once(project: Any, engine: FakeEngine, capsys: Any) -> None:
+    _write_disputes(project, _dispute(1, "confirmed"), _dispute(2))
+    assert main(["run", "--no-mutation", "--format", "json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    (f,) = [f for f in out["findings"] if f["kind"] == "dispute_confirmed"]
+    assert (f["severity"], f["audience"]) == ("info", "human")
+    assert f["location"]["file"] == ".mutineer/disputes.toml"
+    assert out["status"] == "pass"
+
+    _base_here(project)
+    assert main(["run", "--base", "other", "--no-mutation", "--format", "json"]) == 0
+    assert "dispute_confirmed" not in _kinds(json.loads(capsys.readouterr().out))

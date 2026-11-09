@@ -8,7 +8,9 @@ a new rule, or more tests for an existing one, and the proposal waits here.
 - ``add_proposals``: turn requests (``rules propose``) into proposals, merged into a file.
 
 Human answers to triage questions live next to them in ``.mutineer/answers.toml``, a file
-humans write and commit (``load_answers`` / ``append_answer``). ``load_ledger`` reads both.
+humans write and commit (``load_answers`` / ``append_answer``). Agents' disputes of
+surviving mutants, and the human's response to each, live in ``.mutineer/disputes.toml``
+(``load_disputes`` / ``save_disputes``). ``load_ledger`` reads all three.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ from mutineer.models import (
     Answer,
     AnswersFile,
     Audience,
+    Dispute,
+    DisputesFile,
     Finding,
     Location,
     Proposal,
@@ -44,6 +48,7 @@ from mutineer.testscan import TestFunc, scan_source
 
 PROPOSALS_FILE = ".mutineer/proposals.toml"
 ANSWERS_FILE = ".mutineer/answers.toml"
+DISPUTES_FILE = ".mutineer/disputes.toml"
 
 PREFIX_PATTERN = r"^[A-Z][A-Z0-9]*$"
 
@@ -476,14 +481,141 @@ def answer_findings(base_text: str | None, head: AnswersFile) -> list[Finding]:
     return findings
 
 
+# ---- disputes ----
+
+_DISPUTES_HEADER = """\
+# Surviving mutants an agent disputed with `mutineer dispute`, and the human's response
+# (`mutineer resolve --confirm` or `--reject`). Mutineer rewrites this file; comments are
+# not kept.
+"""
+
+
+def load_disputes(root: Path) -> DisputesFile:
+    """The disputes file, or an empty one when it is missing. Raises ``RulesError``."""
+    path = root / DISPUTES_FILE
+    if not path.is_file():
+        return DisputesFile()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RulesError(f"{DISPUTES_FILE} can't be read ({exc}); fix or remove it") from exc
+    return parse_disputes(text)
+
+
+def parse_disputes(text: str) -> DisputesFile:
+    """``text`` as a disputes file. Raises ``RulesError`` with a fix when it is invalid."""
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise RulesError(f"{DISPUTES_FILE} is not valid TOML ({exc}); fix the syntax") from exc
+    if "disputes" in data:
+        raise RulesError(
+            f"{DISPUTES_FILE}: unknown key 'disputes'; write each dispute as a [[dispute]] table"
+        )
+    try:
+        disputes = DisputesFile.model_validate(data)
+    except ValidationError as exc:
+        raise RulesError(f"{DISPUTES_FILE}: {_describe(exc, data, 'dispute')}") from exc
+    seen: set[tuple[str, str, str]] = set()
+    for d in disputes.disputes:
+        if d.key in seen:
+            raise RulesError(
+                f"{DISPUTES_FILE}: {d.function} `{d.original}` -> `{d.mutated}` is disputed "
+                "more than once; keep one [[dispute]] per function, original and mutated"
+            )
+        seen.add(d.key)
+        if d.status == "rejected" and not (d.response or "").strip():
+            raise RulesError(
+                f"{DISPUTES_FILE}: the rejected dispute of {d.function} has no response; "
+                "say why it was rejected"
+            )
+    return disputes
+
+
+def save_disputes(root: Path, disputes: DisputesFile) -> None:
+    """Write ``disputes`` atomically to ``root/.mutineer/disputes.toml``.
+
+    The result is checked before it is written; on a problem the file is left unchanged.
+    """
+    text = _render_disputes(disputes)
+    parse_disputes(text)
+    _write_atomic(root / DISPUTES_FILE, text, prefix=".disputes-")
+
+
+def _render_disputes(disputes: DisputesFile) -> str:
+    lines = [_DISPUTES_HEADER + f"version = {disputes.version}"]
+    for d in disputes.disputes:
+        table = [
+            "[[dispute]]",
+            f"function = {toml_str(d.function)}",
+            f"original = {toml_str(d.original)}",
+            f"mutated = {toml_str(d.mutated)}",
+            f"rules = [{', '.join(toml_str(r) for r in d.rules)}]",
+            f"reason = {toml_str(d.reason)}",
+            f"status = {toml_str(d.status)}",
+        ]
+        if d.response is not None:
+            table.append(f"response = {toml_str(d.response)}")
+        if d.file is not None:
+            table.append(f"file = {toml_str(d.file)}")
+        if d.line is not None:
+            table.append(f"line = {d.line}")
+        lines.append("\n".join(table))
+    return "\n\n".join(lines) + "\n"
+
+
+def dispute_findings(base_text: str | None, head: DisputesFile) -> list[Finding]:
+    """One ``dispute_confirmed`` (INFO, for a human) per dispute newly confirmed since the base.
+
+    A confirmed dispute takes a survivor out of the agent's work and out of the scores, so
+    it is shown once, in the change that confirms it. ``base_text`` is the file at the
+    merge-base; an absent or invalid base counts as empty. A dispute that was already the
+    same confirmed entry at the base gives no finding.
+    """
+    before: list[Dispute] = []
+    if base_text is not None:
+        try:
+            before = parse_disputes(base_text).disputes
+        except RulesError:
+            before = []
+    findings = []
+    for d in head.disputes:
+        if d.status != "confirmed" or d in before:
+            continue
+        findings.append(
+            Finding(
+                check="rules",
+                kind="dispute_confirmed",
+                severity=Severity.INFO,
+                audience=Audience.HUMAN,
+                rules=list(d.rules),
+                location=Location(file=DISPUTES_FILE),
+                message=(
+                    f"A human confirmed the dispute of {d.function}: `{d.original}` -> "
+                    f"`{d.mutated}` ({d.reason})"
+                ),
+                evidence=d.model_dump(),
+                next_action="Check that a human confirmed this dispute.",
+            )
+        )
+    return findings
+
+
+# ---- the ledger ----
+
+
 @dataclass(frozen=True)
 class Ledger:
-    """What humans and agents recorded about triage questions: proposals and answers."""
+    """What humans and agents recorded about triage questions: proposals, answers and
+    disputes."""
 
     proposals: ProposalsFile = field(default_factory=ProposalsFile)
     answers: AnswersFile = field(default_factory=AnswersFile)
+    disputes: DisputesFile = field(default_factory=DisputesFile)
 
 
 def load_ledger(root: Path) -> Ledger:
-    """The proposals and answers files. Raises ``RulesError`` when either is invalid."""
-    return Ledger(proposals=load_proposals(root), answers=load_answers(root))
+    """The proposals, answers and disputes files. Raises ``RulesError`` when one is invalid."""
+    return Ledger(
+        proposals=load_proposals(root), answers=load_answers(root), disputes=load_disputes(root)
+    )
