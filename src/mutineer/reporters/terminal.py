@@ -10,7 +10,15 @@ from rich.markup import escape
 from rich.padding import Padding
 
 from mutineer.models import Finding, Severity, Verdict
-from mutineer.reporters._common import detail_lines, score_text, short_sha, where
+from mutineer.reporters._common import (
+    ANSWERED_TITLE,
+    answered_parts,
+    detail_lines,
+    score_text,
+    short_sha,
+    split_answered,
+    where,
+)
 
 _STYLE = {
     "pass": "bold green",
@@ -44,12 +52,20 @@ def render(verdict: Verdict, *, color: bool = False, width: int = 100) -> str:
         f"  diff score {score_text(verdict.diff_score)}"
         f"  base {short_sha(verdict)}  {verdict.duration_s:.1f} s"
     )
-    findings = sorted(verdict.findings, key=lambda f: _SEVERITY_ORDER[f.severity])
-    if not findings:
+    main, answered = split_answered(verdict.findings)
+    findings = sorted(main, key=lambda f: _SEVERITY_ORDER[f.severity])
+    if not verdict.findings:
         console.print("No findings.")
     for f in findings:
         console.print()
         _finding(console, f)
+    if answered:
+        console.print()
+        console.print(f"[bold]{ANSWERED_TITLE} ({len(answered)})[/]")
+        for f in answered:
+            loc, name, count, reason = answered_parts(f)
+            line = "  ".join(p for p in (loc, name, count, f'"{reason}"') if p)
+            console.print(Padding(escape(line), (0, 0, 0, 2), expand=False))
     # rich pads wrapped lines to the wrap width; drop that padding, before any reset code
     return "".join(_TRAILING.sub(r"\1", line) for line in buf.getvalue().splitlines(True))
 

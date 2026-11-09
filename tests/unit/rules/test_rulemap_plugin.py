@@ -202,3 +202,48 @@ def test_rule_map_still_lists_rule_tests_the_rule_only_option_keeps(pytester):
         "test_r.py::test_slow_rule": ["R-002"],
         "test_r.py::test_cases[1]": ["R-003"],
     }
+
+
+##
+# --mutineer-collected: every collected node id
+
+
+def test_collected_lists_unmarked_and_deselected_tests(pytester):
+    pytester.makeini("[pytest]\naddopts = -m 'not slow' -k 'not hidden'\n")
+    pytester.makepyfile(
+        test_c="""
+        import pytest
+
+        def test_plain():
+            pass
+
+        @pytest.mark.slow
+        def test_slow():
+            pass
+
+        def test_hidden():
+            pass
+
+        @pytest.mark.rule("C-001")
+        @pytest.mark.parametrize("x", [1, 2])
+        def test_cases(x):
+            pass
+        """
+    )
+    out = pytester.path / "collected.json"
+    result = pytester.runpytest(
+        "--collect-only",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--mutineer-rule-only",
+        f"--mutineer-collected={out}",
+    )
+    assert result.ret == 0, result.stdout.str()
+    assert json.loads(out.read_text()) == [
+        "test_c.py::test_cases[1]",
+        "test_c.py::test_cases[2]",
+        "test_c.py::test_hidden",
+        "test_c.py::test_plain",
+        "test_c.py::test_slow",
+    ]

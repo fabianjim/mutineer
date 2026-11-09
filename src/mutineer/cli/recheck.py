@@ -52,7 +52,7 @@ def recheck(
     if not suite_failed:
         rerun = make_engine().rerun(last.survivor_names, checked.rule_map, root)
         merged = merge_rerun(last.engine_run, rerun)
-        result = triage(merged, checked.rule_map, checked.rules)
+        result = triage(merged, checked.rule_map, checked.rules, ledger=checked.ledger)
         findings += result.findings
         rule_score, diff_score = result.rule_score, result.diff_score
         suite_failed = rerun.baseline_failed

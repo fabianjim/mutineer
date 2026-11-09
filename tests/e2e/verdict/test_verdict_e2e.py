@@ -194,7 +194,7 @@ def test_static_and_runtime_rule_identity_agree(shop_repo: Any, branch: str) -> 
                 if test.rules:
                     static[test.key] = sorted(test.rules)
     runtime: dict[str, list[str]] = {}
-    for node_id, ids in collect_rule_map(root, config).items():
+    for node_id, ids in collect_rule_map(root).items():
         runtime.setdefault(re.sub(r"\[.*\]$", "", node_id), sorted(ids))
     assert static == runtime
     assert static  # SHIP-003 is guarded on every branch

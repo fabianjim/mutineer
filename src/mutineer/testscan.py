@@ -120,6 +120,8 @@ class _Context:
     """What the module's imports tell us about names."""
 
     pytest_names: set[str] = field(default_factory=lambda: {"pytest"})
+    imported_pytest: list[str] = field(default_factory=list)
+    """Local names actually bound by ``import pytest [as x]``, in source order."""
     from_pytest: dict[str, str] = field(default_factory=dict)
     unittest_names: set[str] = field(default_factory=lambda: {"unittest"})
     from_unittest: dict[str, str] = field(default_factory=dict)
@@ -225,6 +227,22 @@ def _is_private(name: str) -> bool:
     return name.startswith("_") and not name.startswith("__")
 
 
+@dataclass(frozen=True)
+class PytestImports:
+    """How a module's imports refer to pytest."""
+
+    modules: tuple[str, ...]
+    """Local names bound by ``import pytest [as x]``, in source order."""
+    names: Mapping[str, str]
+    """``from pytest import name [as local]``: local -> name."""
+
+
+def pytest_imports(module: cst.Module) -> PytestImports:
+    """The names ``module`` binds to pytest, as the scan reads them."""
+    ctx = _read_imports(module)
+    return PytestImports(tuple(dict.fromkeys(ctx.imported_pytest)), dict(ctx.from_pytest))
+
+
 def _read_imports(module: cst.Module) -> _Context:
     ctx = _Context()
 
@@ -239,6 +257,7 @@ def _read_imports(module: cst.Module) -> _Context:
                 )
                 if full == "pytest":
                     ctx.pytest_names.add(local)
+                    ctx.imported_pytest.append(local)
                 elif full == "unittest":
                     ctx.unittest_names.add(local)
                 elif _is_source_module(full):

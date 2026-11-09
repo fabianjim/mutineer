@@ -3,7 +3,7 @@
 - ``load_rules``: parse and validate a rules file.
 - ``compare``: rules-file changes from base to head; deleting an id is an error.
 - ``collect_rule_map``: which tests carry which rule ids, as pytest (and so mutmut)
-  sees them.
+  sees them; ``collect`` also returns every collected node id.
 - ``rule_findings``: markers that don't match the rules file, and unguarded rules.
 """
 
@@ -17,12 +17,12 @@ import sys
 import tempfile
 import tomllib
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
-from mutineer.config import Config
 from mutineer.errors import CollectionError, ConfigError, RulesError
 from mutineer.models import Audience, Finding, Location, Rule, RuleMap, RulesFile, Severity
 
@@ -46,13 +46,16 @@ def load_rules(text: str) -> RulesFile:
     return rules_file
 
 
-def _describe(exc: ValidationError, data: object) -> str:
-    """One line naming the first problem and how to fix it."""
+def _describe(exc: ValidationError, data: object, table: str = "rule") -> str:
+    """One line naming the first problem and how to fix it.
+
+    ``table`` is the name of the array of tables (``rule`` in rules.toml).
+    """
     err = exc.errors()[0]
     loc = list(err["loc"])
     where = "top level"
-    if len(loc) >= 2 and loc[0] == "rule" and isinstance(loc[1], int):
-        where = f"[[rule]] #{loc[1] + 1}{_rule_label(data, loc[1])}"
+    if len(loc) >= 2 and loc[0] == table and isinstance(loc[1], int):
+        where = f"[[{table}]] #{loc[1] + 1}{_rule_label(data, loc[1], table)}"
         loc = loc[2:]
     field = ".".join(str(p) for p in loc)
     kind = err["type"]
@@ -70,9 +73,9 @@ def _describe(exc: ValidationError, data: object) -> str:
     return f"{where}: '{field}': {err['msg']}"
 
 
-def _rule_label(data: object, index: int) -> str:
+def _rule_label(data: object, index: int, table: str = "rule") -> str:
     try:
-        rule_id = data["rule"][index]["id"]  # type: ignore[index]
+        rule_id = data[table][index]["id"]  # type: ignore[index]
     except (KeyError, IndexError, TypeError):
         return ""
     return f" ({rule_id})" if isinstance(rule_id, str) else ""
@@ -213,22 +216,36 @@ def _marker_finding(
 _OUTPUT_TAIL = 60
 
 
-def collect_rule_map(root: Path, config: Config) -> RuleMap:
-    """Collect the rule map by running ``pytest --collect-only`` in ``root``.
+@dataclass(frozen=True)
+class Collected:
+    """What one ``pytest --collect-only`` run in the project finds."""
+
+    rule_map: RuleMap
+    node_ids: list[str]
+    """Every collected node id, sorted, taken before any deselection."""
+
+
+def collect_rule_map(root: Path) -> RuleMap:
+    """The rule map, as ``collect`` finds it."""
+    return collect(root).rule_map
+
+
+def collect(root: Path) -> Collected:
+    """Collect the rule map and every node id by running ``pytest --collect-only`` in ``root``.
 
     Uses the same pytest arguments as mutmut's own collection (``--rootdir=.``, the
     project's ``[tool.mutmut]`` ``pytest_add_cli_args_test_selection`` and
     ``pytest_add_cli_args``), so node ids match mutmut's ``tests_by_mangled_function_name``.
     Adds ``--ignore=mutants -p no:cacheprovider`` and ``PYTHONDONTWRITEBYTECODE=1``.
     Raises ``CollectionError`` (a ``RulesError``) when the project's tests can't be
-    collected, and ``RulesError`` for other failures. ``config`` is accepted for the contract;
-    test selection comes from mutmut's settings, not ``test_paths``.
+    collected, and ``RulesError`` for other failures. Test selection comes from mutmut's
+    settings, not Mutineer's ``test_paths``.
     """
-    del config  # see docstring
     selection, extra = _mutmut_pytest_args(root)
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     with tempfile.TemporaryDirectory(prefix="mutineer-rulemap-") as tmp:
         out_path = Path(tmp) / "rulemap.json"
+        ids_path = Path(tmp) / "collected.json"
         cmd = [
             sys.executable,
             "-m",
@@ -244,6 +261,7 @@ def collect_rule_map(root: Path, config: Config) -> RuleMap:
             "-p",
             "mutineer",
             f"--mutineer-rulemap={out_path}",
+            f"--mutineer-collected={ids_path}",
             *selection,
             *extra,
         ]
@@ -255,13 +273,24 @@ def collect_rule_map(root: Path, config: Config) -> RuleMap:
             if _suite_is_broken(proc):
                 raise CollectionError(_collection_failure(proc), output=_output_tail(proc))
             raise RulesError(_collection_failure(proc))
-        if not out_path.is_file():
+        if not (out_path.is_file() and ids_path.is_file()):
             raise RulesError(
                 "pytest ran but Mutineer's pytest plugin did not write the rule map; "
                 "install mutineer in the project's environment and don't block "
                 "the plugin with -p no:mutineer"
             )
-        return _parse_rule_map(out_path.read_text(encoding="utf-8"))
+        return Collected(
+            rule_map=_parse_rule_map(out_path.read_text(encoding="utf-8")),
+            node_ids=_parse_node_ids(ids_path.read_text(encoding="utf-8")),
+        )
+
+
+def mutmut_source_paths(root: Path) -> list[str]:
+    """``source_paths`` from the project's mutmut config, read as mutmut reads it."""
+    table = _pyproject_mutmut(root)
+    if table is None:
+        table = _setup_cfg_mutmut(root)
+    return _str_list(table, "source_paths")
 
 
 def _mutmut_pytest_args(root: Path) -> tuple[list[str], list[str]]:
@@ -359,3 +388,13 @@ def _parse_rule_map(text: str) -> RuleMap:
     ):
         raise RulesError("the rule map from pytest has an unexpected shape")
     return {str(node): sorted(set(ids)) for node, ids in data.items()}
+
+
+def _parse_node_ids(text: str) -> list[str]:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RulesError(f"the collected test list from pytest is not valid JSON ({exc})") from exc
+    if not isinstance(data, list) or not all(isinstance(i, str) for i in data):
+        raise RulesError("the collected test list from pytest has an unexpected shape")
+    return sorted(set(data))

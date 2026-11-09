@@ -285,3 +285,53 @@ def test_nothing_changed_gives_an_empty_diff_score(build: Any, ship_rules: Rules
     assert result.findings == []
     assert result.rule_score is None
     assert result.diff_score == Score(killed=0, total=0)
+
+
+##
+# questions for a human name the function and point at its lines
+
+
+def test_human_findings_name_the_function_and_point_at_its_lines(
+    build: Any, ship_rules: RulesFile
+) -> None:
+    d, q, new = build.discount, build.quote, "shop.fresh.x_new"
+    run = build.run(
+        # the unreached function comes first: the ones after it are still judged
+        functions=[
+            build.fn(new, "src/shop/fresh.py", 1, 3),
+            build.fn(d, "src/shop/pricing.py", 1, 6),
+            build.fn(q, "src/shop/shipping.py", 6, 13),
+        ],
+        results=[
+            build.mutant(new, 1, "no_tests", line=2),
+            build.mutant(d, 1, "survived", line=2),
+            build.mutant(d, 2, "timeout", line=4),
+            build.mutant(q, 1, "timeout", "killed", 8),
+        ],
+        tests={d: [build.impl_test], q: [build.rule_test]},
+        unreached=[new],
+    )
+    result = triage(run, build.rule_map, ship_rules)
+    assert [
+        (f.kind, f.evidence["function"], f.location.file, f.location.line, f.location.end_line)
+        for f in result.findings
+        if f.location
+    ] == [
+        ("mutant_inconclusive", d, "src/shop/pricing.py", 4, 4),
+        ("mutant_inconclusive", q, "src/shop/shipping.py", 8, 8),
+        ("survivor_unowned", d, "src/shop/pricing.py", 2, 2),
+        ("unreached", new, "src/shop/fresh.py", 1, 3),
+    ]
+    messages = [f.message for f in result.findings]
+    assert messages[0].startswith("1 mutant in discount had no clear result")
+    assert messages[1].startswith("1 mutant in quote had no clear result")
+    assert messages[2].startswith("1 mutant in discount survived")
+    assert messages[3] == "No test reaches new."
+
+
+def test_a_function_without_mutants_gives_no_finding(build: Any, ship_rules: RulesFile) -> None:
+    q, d = build.quote, build.discount
+    run = build.run(functions=[build.fn(q), build.fn(d)], tests={q: [build.rule_test]})
+    result = triage(run, build.rule_map, ship_rules)
+    assert result.findings == []
+    assert result.rule_score == Score(killed=0, total=0)

@@ -22,6 +22,8 @@ RULES_TEMPLATE = """\
 #
 # Never delete a rule: set status = "retired" instead. `mutineer rules check` lists
 # each rule's tests.
+#
+# Add rules with `mutineer rules propose` (agent), then `mutineer rules accept` (human).
 version = 1
 
 # [[rule]]
@@ -29,6 +31,11 @@ version = 1
 # statement = "Orders of $50 or more ship free"
 # seam = "shop.shipping.quote"
 """
+
+NEXT_STEP = (
+    "Next: propose rules with `mutineer rules propose` (or `--batch`), then "
+    "`mutineer rules accept`."
+)
 
 # each entry, with the spellings that already cover it
 _GITIGNORE_ENTRIES: dict[str, set[str]] = {
@@ -68,4 +75,5 @@ def init() -> int:
         typer.echo(f"Added {', '.join(missing)} to .gitignore.")
     else:
         typer.echo(".gitignore already has Mutineer's entries.")
+    typer.echo(NEXT_STEP)
     return 0

@@ -6,7 +6,7 @@ import shutil
 import sys
 import time
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -18,6 +18,7 @@ from mutineer.config import Config, load_config
 from mutineer.engine import Engine
 from mutineer.engine.mutmut_engine import MutmutEngine
 from mutineer.errors import CollectionError, RulesError
+from mutineer.ledger import ANSWERS_FILE, Ledger, answer_findings, load_ledger
 from mutineer.models import Diff, EngineRun, Finding, RuleMap, RulesFile, Verdict
 from mutineer.reporters import agent, json, markdown, terminal
 from mutineer.rules import collect_rule_map, compare, load_rules, rule_findings
@@ -54,7 +55,7 @@ def run(
     result = Triage(findings=[], rule_score=None, diff_score=None)
     if not no_mutation and not checked.suite_broken:
         engine_run = make_engine().run(checked.diff, checked.rule_map, root)
-        result = triage(engine_run, checked.rule_map, checked.rules)
+        result = triage(engine_run, checked.rule_map, checked.rules, ledger=checked.ledger)
 
     verdict = decide(
         [*checked.findings, *result.findings],
@@ -95,12 +96,18 @@ class StaticChecks:
     findings: list[Finding]
     suite_broken: bool = False
     """pytest couldn't collect the tests; ``findings`` holds a ``baseline_failed`` BLOCK."""
+    ledger: Ledger = field(default_factory=Ledger)
+    """Pending proposals and human answers, which triage shows on its questions."""
 
 
 def static_checks(root: Path, config: Config, base_ref: str) -> StaticChecks:
     """Load the diff and rules, collect the rule map, and run tamper and the rules checks.
 
-    Raises ``RulesError`` when a rule id was deleted from the rules file. When pytest can't
+    Also loads the ledger (proposals and answers) and reports each answer added or changed
+    since the merge-base as ``answer_added``.
+
+    Raises ``RulesError`` when a rule id was deleted from the rules file, or when the
+    proposals or answers file is invalid. When pytest can't
     collect the tests, the suite is broken: the result holds a ``baseline_failed`` BLOCK
     instead of the rule findings (the rule map is unknown), and ``suite_broken`` is set so
     callers skip mutation. Tamper detection reads files only, so it still runs.
@@ -110,20 +117,30 @@ def static_checks(root: Path, config: Config, base_ref: str) -> StaticChecks:
     rules_changes = compare(
         _base_rules(root, diff.base, config), head_rules, rules_file=config.rules_file
     )
+    recorded = load_ledger(root)
+    answers_added = answer_findings(
+        gitdiff.read_base_file(root, diff.base, ANSWERS_FILE), recorded.answers
+    )
+    rules_changes = [*rules_changes, *answers_added]
     test_paths = _test_paths(root, diff.base, config)
     tamper_findings = tamper.check(diff, root, head_rules, test_paths=test_paths)
     try:
-        rule_map = collect_rule_map(root, config)
+        rule_map = collect_rule_map(root)
     except CollectionError as exc:
-        return StaticChecks(
-            diff=diff,
-            rules=head_rules,
-            rule_map={},
-            findings=[*tamper_findings, *rules_changes, collection_failed(exc.output)],
-            suite_broken=True,
-        )
-    findings = [*tamper_findings, *rules_changes, *rule_findings(head_rules, rule_map)]
-    return StaticChecks(diff=diff, rules=head_rules, rule_map=rule_map, findings=findings)
+        rule_map = {}
+        findings = [*tamper_findings, *rules_changes, collection_failed(exc.output)]
+        suite_broken = True
+    else:
+        findings = [*tamper_findings, *rules_changes, *rule_findings(head_rules, rule_map)]
+        suite_broken = False
+    return StaticChecks(
+        diff=diff,
+        rules=head_rules,
+        rule_map=rule_map,
+        findings=findings,
+        suite_broken=suite_broken,
+        ledger=recorded,
+    )
 
 
 def emit(verdict: Verdict, format: OutputFormat, output: Path | None) -> None:

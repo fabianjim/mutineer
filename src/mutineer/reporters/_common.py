@@ -81,3 +81,26 @@ def _lines(loc: dict[str, Any]) -> str:
     if end is None or end == line:
         return f"line {line}"
     return f"lines {line}-{end}"
+
+
+ANSWERED_TITLE = "Already answered"
+"""The last group of the human reports: questions a human already said no to."""
+
+
+def split_answered(findings: list[Finding]) -> tuple[list[Finding], list[Finding]]:
+    """``findings`` without the answered questions, and the answered ones, in order."""
+    main = [f for f in findings if "answer" not in f.evidence]
+    answered = [f for f in findings if "answer" in f.evidence]
+    return main, answered
+
+
+def answered_parts(f: Finding) -> tuple[str, str, str, str]:
+    """Location, name, mutant count and reason of an answered question."""
+    ev = f.evidence
+    name = ev.get("qualname") or ev.get("function") or f.kind
+    mutants = ev.get("mutants")
+    n = len(mutants) if isinstance(mutants, list) else 0
+    count = f"{n} mutant" if n == 1 else f"{n} mutants"
+    answer = ev.get("answer")
+    reason = answer.get("reason", "") if isinstance(answer, dict) else ""
+    return where(f) or "", str(name), count, str(reason)

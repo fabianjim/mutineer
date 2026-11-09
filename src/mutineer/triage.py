@@ -28,6 +28,23 @@ one ``unmeasured_change`` per file.
 
 Only ``survivor_rule`` goes to the agent (TRIAGE-001). Unmeasured lines have no mutants,
 so they never enter a score (TRIAGE-002).
+
+With a ``Ledger``, the two questions for a human (``survivor_unowned`` and
+``guarded_by_impl_only``) say what was already recorded about them:
+
+- **proposed**: a pending proposal answers the question. A proposal is linked to a
+  function through its tests (``strip_params`` of a proposed test equals that of one of the
+  function's covering tests, or of its implementation tests for ``guarded_by_impl_only``),
+  because a proposal names tests, not functions. For
+  ``guarded_by_impl_only`` it must add tests to one of the finding's rules; for
+  ``survivor_unowned`` it must be a new rule;
+- **answered**: a human said no (``.mutineer/answers.toml``). Answers are keyed by the
+  mutmut name, which is unique and stable while the function keeps its module and name
+  (finding ids are renumbered every run, lines move and qualnames aren't unique). A
+  renamed function is asked about again, the safe direction. For ``guarded_by_impl_only``
+  the rule set must also be the same, so a changed rule set asks again.
+
+A proposal takes precedence over an answer. Neither changes kind, severity or audience.
 """
 
 from __future__ import annotations
@@ -36,6 +53,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from mutineer.ledger import Ledger, strip_params
 from mutineer.models import (
     Audience,
     EngineRun,
@@ -128,8 +146,15 @@ class _Mutant:
         }
 
 
-def triage(run: EngineRun, rule_map: RuleMap, rules: RulesFile) -> Triage:
-    """Findings and scores for ``run``, with rule coverage from ``rule_map``."""
+def triage(
+    run: EngineRun, rule_map: RuleMap, rules: RulesFile, *, ledger: Ledger | None = None
+) -> Triage:
+    """Findings and scores for ``run``, with rule coverage from ``rule_map``.
+
+    With ``ledger``, the questions for a human carry their tests, any pending proposal or
+    human answer, and a ``next_action`` naming the commands that answer them. Without it,
+    they read as they did before answers existed.
+    """
     unmeasured = _unmeasured(run)
     if run.baseline_failed:
         # mutant results mean nothing when the suite fails without any mutant
@@ -158,7 +183,8 @@ def triage(run: EngineRun, rule_map: RuleMap, rules: RulesFile) -> Triage:
     for fn in order:
         ref = refs.get(fn)
         fn_mutants = by_function.get(fn, [])
-        rule_tests = [t for t in run.tests_by_function.get(fn, []) if rule_map.get(t)]
+        covering = run.tests_by_function.get(fn, [])
+        rule_tests = [t for t in covering if rule_map.get(t)]
         rule_ids = sorted({i for t in rule_tests for i in rule_map[t]})
 
         if fn in unreached:
@@ -169,7 +195,10 @@ def triage(run: EngineRun, rule_map: RuleMap, rules: RulesFile) -> Triage:
             lost = [m for m in fn_mutants if status_group(_status(m.all)) in _LOST]
             unsure = [m for m in fn_mutants if status_group(_status(m.all)) == "I"]
             if lost:
-                unowned.append(_unowned(fn, ref, lost))
+                finding = _unowned(fn, ref, lost)
+                if ledger is not None:
+                    finding = _with_ledger(finding, ref, sorted(covering), ledger)
+                unowned.append(finding)
             if unsure:
                 inconclusive.append(_inconclusive(fn, ref, unsure, []))
             continue
@@ -187,11 +216,15 @@ def triage(run: EngineRun, rule_map: RuleMap, rules: RulesFile) -> Triage:
                 unsure.append(m)
             elif a == "K" and r in _LOST:
                 impl_only.append(m)
-            elif a in _LOST and r in _LOST:
+            elif a in _LOST:  # r is lost too here
                 survivors.append(_survivor_rule(m, ref, rule_ids, rule_tests, rules_by_id))
                 survivor_names.append(m.name)
         if impl_only:
-            guarded.append(_guarded(fn, ref, impl_only, rule_ids))
+            finding = _guarded(fn, ref, impl_only, rule_ids)
+            if ledger is not None:
+                impl_tests = sorted(set(covering) - set(rule_tests))
+                finding = _with_ledger(finding, ref, impl_tests, ledger)
+            guarded.append(finding)
         if unsure:
             inconclusive.append(_inconclusive(fn, ref, unsure, rule_ids))
 
@@ -354,6 +387,79 @@ def _unowned(fn: str, ref: FunctionRef | None, mutants: list[_Mutant]) -> Findin
         evidence={"function": fn, "mutants": [m.evidence() for m in mutants]},
         next_action="Is this behaviour a promise? If so, add a rule.",
     )
+
+
+def _with_ledger(f: Finding, ref: FunctionRef | None, tests: list[str], ledger: Ledger) -> Finding:
+    """``f`` (a question for a human) with its tests, and what the ledger says about it.
+
+    ``tests`` are the tests the question is about: every covering test for
+    ``survivor_unowned``, the implementation tests for ``guarded_by_impl_only``. A pending
+    proposal answers the question when it lists one of them.
+    """
+    fn = f.evidence["function"]
+    evidence = dict(f.evidence)
+    if ref is not None:
+        evidence["qualname"] = ref.qualname
+    evidence["tests" if f.kind == "survivor_unowned" else "impl_tests"] = tests
+
+    stripped = {strip_params(t) for t in tests}
+    proposed = sorted(
+        p.id
+        for p in ledger.proposals.proposals
+        if any(strip_params(t) in stripped for t in p.tests)
+        and (
+            p.statement is not None
+            if f.kind == "survivor_unowned"
+            else p.statement is None and p.id in f.rules
+        )
+    )
+    answer = next(
+        (
+            a
+            for a in ledger.answers.answers
+            if a.function == fn
+            and a.question == f.kind
+            and (f.kind == "survivor_unowned" or sorted(a.rules) == f.rules)
+        ),
+        None,
+    )
+    rules_text = ", ".join(f.rules)
+    if proposed:
+        evidence["proposed"] = proposed
+        args = " ".join(proposed)
+        action = (
+            f"Rule {', '.join(proposed)} is proposed for this: a human runs mutineer rules "
+            f"accept {args} or mutineer rules reject {args}."
+        )
+    elif answer is not None:
+        evidence["answer"] = {"reason": answer.reason, "question": answer.question}
+        if f.kind == "survivor_unowned":
+            action = (
+                f'Answered before: not a promise ("{answer.reason}"). If this change makes it '
+                "one, propose a rule and remove the answer from .mutineer/answers.toml."
+            )
+        else:
+            action = (
+                f'Answered before: not part of {rules_text} ("{answer.reason}"). If this '
+                f"change makes it part of {rules_text}, propose the tests and remove the "
+                "answer from .mutineer/answers.toml."
+            )
+    elif f.kind == "survivor_unowned":
+        action = (
+            "Is this behaviour a promise? If yes, propose a rule: mutineer rules propose "
+            '--prefix <PREFIX> --statement "<the promise>" --test <a test from evidence.tests '
+            "that proves it>; a human then runs mutineer rules accept <id>. If no, run "
+            f'mutineer rules dismiss {fn} --reason "<why>" so this isn\'t asked again.'
+        )
+    else:
+        rule = f.rules[0] if len(f.rules) == 1 else f"<one of {rules_text}>"
+        action = (
+            f"Is this behaviour part of {rules_text}? If yes, mutineer rules propose --rule "
+            f"{rule} --test <a test from evidence.impl_tests that catches it>; a human then "
+            f"runs mutineer rules accept {rule}. If no, run mutineer rules dismiss {fn} "
+            '--reason "<why>".'
+        )
+    return f.model_copy(update={"evidence": evidence, "next_action": action})
 
 
 def _unreached(fn: str, ref: FunctionRef | None, mutants: list[_Mutant]) -> Finding:

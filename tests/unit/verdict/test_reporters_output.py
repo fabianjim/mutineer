@@ -149,3 +149,63 @@ def test_terminal_wraps_long_text_without_trailing_spaces(build: Any) -> None:
         text = terminal.render(decide([finding], base="abc", head="WORKTREE"), color=color)
         assert len(text.splitlines()) > 4
         assert all(not line.replace("\x1b[0m", "").endswith(" ") for line in text.splitlines())
+
+
+##
+# answered questions
+
+
+def answered_verdict(build: Any) -> Verdict:
+    answered = build.finding(
+        "info",
+        kind="survivor_unowned",
+        check="mutation",
+        location=Location(file="src/shop/pricing.py", line=12, end_line=14),
+        message="2 mutants in loyalty_points survived, and no rule test covers it.",
+        evidence={
+            "function": "shop.pricing.x_loyalty_points",
+            "qualname": "loyalty_points",
+            "mutants": [
+                {"mutant": "m1", "line": 12, "original": "a <= 0", "mutated": "a < 0"},
+                {"mutant": "m2", "line": 14, "original": "t // 10", "mutated": "t / 10"},
+            ],
+            "answer": {"reason": "Points are marketing", "question": "survivor_unowned"},
+        },
+        next_action="Answered before: not a promise.",
+    )
+    open_question = build.finding(
+        "info", kind="survivor_unowned", check="mutation", message="Still open."
+    )
+    return decide(
+        [answered, open_question, build.finding("warn", kind="test_config_changed")],
+        base="abc",
+        head="WORKTREE",
+    )
+
+
+def test_terminal_puts_answered_questions_last_on_one_line(build: Any) -> None:
+    text = terminal.render(answered_verdict(build))
+    head, _, group = text.partition("Already answered (1)\n")
+    assert group.strip().splitlines() == [
+        'src/shop/pricing.py:12-14  loyalty_points  2 mutants  "Points are marketing"'
+    ]
+    assert "Still open." in head and "test_config_changed" in head
+    assert "loyalty_points survived" not in text
+    assert "a <= 0" not in text and "Answered before" not in text
+
+
+def test_markdown_puts_answered_questions_last_on_one_line(build: Any) -> None:
+    text = markdown.render(answered_verdict(build))
+    assert "### Questions for a human (2)" in text
+    head, _, group = text.partition("### Already answered (1)\n")
+    assert group.strip().splitlines() == [
+        "- `src/shop/pricing.py:12-14` · loyalty_points · 2 mutants: Points are marketing"
+    ]
+    assert "Still open." in head
+    assert "a <= 0" not in text and "Answered before" not in text
+
+
+def test_json_keeps_answered_questions(build: Any) -> None:
+    verdict = answered_verdict(build)
+    payload = stdjson.loads(json.render(verdict))
+    assert [f["evidence"].get("answer") is not None for f in payload["findings"]].count(True) == 1

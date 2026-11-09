@@ -364,6 +364,24 @@ def test_unittest_skip_decorator_counts(tamper_repo):
     assert finding.kind == "rule_test_skipped"
 
 
+@pytest.mark.parametrize(
+    ("imports", "decorator"),
+    [
+        ("import unittest as ut", "@ut.skip('later')"),
+        ("from unittest import skip", "@skip('later')"),
+        ("from unittest import skip as sk", "@sk('later')"),
+    ],
+    ids=["module_alias", "imported_name", "imported_alias"],
+)
+def test_unittest_skip_counts_under_any_import_name(tamper_repo, imports, decorator):
+    text = f"{imports}\n{RULE_FILE}"
+    tamper_repo.base({RULE_PATH: text})
+    head = _edit(text, "    def test_is(self):", f"    {decorator}\n    def test_is(self):")
+    finding = _only(tamper_repo.head({RULE_PATH: head}))
+    assert finding.kind == "rule_test_skipped"
+    assert finding.evidence["test"] == f"{RULE_PATH}::TestUnit::test_is"
+
+
 # ---- precedence: one finding per test, first kind in table order ----
 
 

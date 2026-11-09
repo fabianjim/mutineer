@@ -72,6 +72,35 @@ def test_well_over_threshold_ships_free():
 
 Rules are never deleted. To drop one, set `status = "retired"` and keep the entry.
 
+### Start the ledger
+
+You don't have to write rules and markers by hand. An agent proposes, a human accepts:
+
+```console
+mutineer rules propose --prefix SHIP --statement "Orders of $50 or more ship free" \
+  --seam shop.shipping.quote --test tests/rules/test_shipping_rules.py::test_small_order_pays
+mutineer rules check             # lists the rules and the pending proposals
+mutineer rules accept SHIP-001   # human: appends the rule, marks its tests
+```
+
+- `propose` writes only `.mutineer/proposals.toml`. It picks the next free id for the
+  prefix (or takes `--id`, or `--rule ID` to add tests to an existing rule) and checks the
+  id, the seam and the tests. To bootstrap a whole repo, pass a JSON array with
+  `--batch FILE` (or `-` for stdin); one bad entry means nothing is written.
+- `reject ID...` drops pending proposals.
+- `accept ID...` or `accept --all` appends the rules to rules.toml and adds
+  `@pytest.mark.rule("ID")` to the proposed tests.
+- `dismiss FUNCTION... --reason TEXT` answers no to a `survivor_unowned` or
+  `guarded_by_impl_only` question from the last run (use the finding's
+  `evidence.function`). Later runs still list the finding, under "Already answered".
+
+Commit rules.toml, `.mutineer/proposals.toml` and `.mutineer/answers.toml`; only
+`.mutineer/last-run.json` is ignored.
+
+`accept` and `dismiss` record a human decision: without a terminal they refuse unless you
+pass `--yes`. That is a convention, not a security boundary; the protection is that every
+change shows up in the next run as a finding (`rules_file_changed`, `answer_added`).
+
 ## Use
 
 ```console
@@ -79,6 +108,10 @@ mutineer run                     # judge the diff from the merge-base to the wor
 mutineer run --format agent      # compact JSON for the implementing agent
 mutineer recheck --format agent  # after the agent adds tests: rerun only its survivors
 mutineer rules check             # validate rules.toml and list each rule's tests
+mutineer rules propose ...       # agent: propose a rule (or --batch FILE)
+mutineer rules reject ID...      # drop pending proposals
+mutineer rules accept ID...      # human: add proposed rules and mark their tests
+mutineer rules dismiss FN... --reason TEXT  # human: answer no to a question
 ```
 
 `run` compares the working tree (uncommitted and untracked files included) with
@@ -155,6 +188,9 @@ promise?"), and a changed function no test reaches is `unreached`. Both are for 
 
 `run` and `recheck` write only to `mutants/` (mutmut's working directory) and
 `.mutineer/last-run.json` (the state `recheck` reads), unless you pass `--output`.
+`rules propose`, `reject` and `dismiss` write only in `.mutineer/`. Only the commands you
+run yourself write elsewhere: `init` (`.gitignore`) and `rules accept` (the rules file and
+rule markers in tests).
 
 **`mutants/` is deleted at the start of every `run` and `recheck`.** mutmut's cache gives
 wrong answers across branches and between Mutineer's two passes, so Mutineer always

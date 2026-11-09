@@ -109,6 +109,16 @@ def test_init_writes_a_valid_template_and_gitignore_entries(tmp_path, monkeypatc
     assert (tmp_path / ".gitignore").read_text() == "mutants/\n.mutineer/last-run.json\n"
 
 
+def test_init_names_the_next_step(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert main(["init"]) == 0
+    out = capsys.readouterr().out
+    last = out.rstrip().splitlines()[-1]
+    assert last.startswith("Next: propose rules with `mutineer rules propose`")
+    assert "mutineer rules accept" in out
+    assert "mutineer rules propose" in RULES_TEMPLATE
+
+
 def test_init_never_overwrites_and_only_appends_missing_entries(tmp_path, monkeypatch):
     (tmp_path / ".mutineer").mkdir()
     (tmp_path / ".mutineer/rules.toml").write_text("version = 1  # mine\n")

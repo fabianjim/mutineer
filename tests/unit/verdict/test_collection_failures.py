@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from mutineer.config import Config
 from mutineer.errors import CollectionError, RulesError
 from mutineer.rules import collect_rule_map
 
@@ -42,7 +41,7 @@ def test_a_broken_suite_is_a_collection_error(
 ) -> None:
     root = project(tmp_path, files)
     with pytest.raises(CollectionError) as info:
-        collect_rule_map(root, Config())
+        collect_rule_map(root)
     assert needle in info.value.output
     assert "fix collection" in str(info.value)
 
@@ -58,5 +57,5 @@ def test_a_broken_suite_is_a_collection_error(
 def test_a_setup_problem_is_not_a_collection_error(tmp_path: Path, mutmut_args: str) -> None:
     root = project(tmp_path, {"test_a.py": OK_TEST}, mutmut_args)
     with pytest.raises(RulesError) as info:
-        collect_rule_map(root, Config())
+        collect_rule_map(root)
     assert not isinstance(info.value, CollectionError)

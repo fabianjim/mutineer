@@ -6,13 +6,17 @@ from pathlib import Path
 
 import typer
 
-from mutineer import gitdiff
+from mutineer import gitdiff, ledger
+from mutineer.cli import rules_accept, rules_dismiss, rules_propose
 from mutineer.config import load_config
 from mutineer.errors import ConfigError, RulesError
-from mutineer.models import Finding, RuleMap, RulesFile
-from mutineer.rules import collect_rule_map, compare, load_rules, rule_findings
+from mutineer.models import Finding, ProposalsFile, RuleMap, RulesFile
+from mutineer.rules import collect, compare, load_rules, rule_findings
 
-app = typer.Typer(help="Inspect and validate the rules file.", no_args_is_help=True)
+app = typer.Typer(
+    help="Inspect and validate the rules file, propose and accept rules, and dismiss questions.",
+    no_args_is_help=True,
+)
 
 
 @app.command(name="check")
@@ -21,7 +25,7 @@ def check(
         None, "--base", help="Base branch. Default: [tool.mutineer] base, else main, else master."
     ),
 ) -> int:
-    """Validate rules.toml, compare it with the base, and list each rule's tests."""
+    """Validate rules.toml, compare it with the base, and list each rule's tests and proposals."""
     root = Path.cwd()
     config = load_config(root)
     path = root / config.rules_file
@@ -36,12 +40,22 @@ def check(
         typer.echo(note)
     findings += compare(base_rules, head, rules_file=config.rules_file)
 
-    rule_map = collect_rule_map(root, config)
-    findings += rule_findings(head, rule_map)
+    proposals = ledger.load_proposals(root)
+    collected = collect(root)
+    findings += rule_findings(head, collected.rule_map)
 
-    _print_rules(head, rule_map)
+    _print_rules(head, collected.rule_map)
+    _print_proposals(proposals)
+    for problem in ledger.validate(proposals, rules=head, collected=collected, root=root):
+        typer.echo(f"STALE {problem}")
     _print_findings(findings)
     return 0
+
+
+app.command(name="propose")(rules_propose.propose)
+app.command(name="reject")(rules_propose.reject)
+app.command(name="accept")(rules_accept.accept)
+app.command(name="dismiss")(rules_dismiss.dismiss)
 
 
 def _base_rules(
@@ -79,6 +93,20 @@ def _print_rules(rules: RulesFile, rule_map: RuleMap) -> None:
         if not tests:
             typer.echo("  no tests")
         for test in tests:
+            typer.echo(f"  - {test}")
+
+
+def _print_proposals(proposals: ProposalsFile) -> None:
+    if not proposals.proposals:
+        return
+    typer.echo("\nProposed (not accepted):")
+    for p in proposals.proposals:
+        typer.echo(f"{p.id}: {p.statement if p.statement is not None else '+tests'}")
+        if p.seam:
+            typer.echo(f"  seam: {p.seam}")
+        if not p.tests:
+            typer.echo("  no tests")
+        for test in p.tests:
             typer.echo(f"  - {test}")
 
 

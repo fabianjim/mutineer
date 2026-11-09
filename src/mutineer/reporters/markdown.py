@@ -1,7 +1,8 @@
 """``--format markdown``: a PR comment.
 
 Blocking findings come first, then the agent's work, then questions only a human can
-answer, each in its own section.
+answer, each in its own section. Questions a human already answered come last, one line
+each.
 """
 
 from __future__ import annotations
@@ -9,7 +10,15 @@ from __future__ import annotations
 import re
 
 from mutineer.models import Audience, Finding, Severity, Verdict
-from mutineer.reporters._common import detail_lines, score_text, short_sha, where
+from mutineer.reporters._common import (
+    ANSWERED_TITLE,
+    answered_parts,
+    detail_lines,
+    score_text,
+    short_sha,
+    split_answered,
+    where,
+)
 
 _SEVERITY_ORDER = {Severity.BLOCK: 0, Severity.WARN: 1, Severity.INFO: 2}
 
@@ -23,8 +32,9 @@ def render(verdict: Verdict) -> str:
         f"| {score_text(verdict.rule_score)} | {score_text(verdict.diff_score)} "
         f"| `{short_sha(verdict)}` | {verdict.duration_s:.1f} s |",
     ]
-    blocking = [f for f in verdict.findings if f.severity == Severity.BLOCK]
-    rest = [f for f in verdict.findings if f.severity != Severity.BLOCK]
+    main, answered = split_answered(verdict.findings)
+    blocking = [f for f in main if f.severity == Severity.BLOCK]
+    rest = [f for f in main if f.severity != Severity.BLOCK]
     sections = [
         ("Blocking", blocking),
         ("For the agent", [f for f in rest if f.audience == Audience.AGENT]),
@@ -38,6 +48,12 @@ def render(verdict: Verdict) -> str:
         lines += ["", f"### {title} ({len(findings)})", ""]
         for f in sorted(findings, key=lambda f: _SEVERITY_ORDER[f.severity]):
             lines += _finding(f)
+    if answered:
+        lines += ["", f"### {ANSWERED_TITLE} ({len(answered)})", ""]
+        for f in answered:
+            loc, name, count, reason = answered_parts(f)
+            head = " · ".join(p for p in (code(loc) if loc else "", name, count) if p)
+            lines.append(f"- {head}: {_inline(reason)}")
     return "\n".join(lines) + "\n"
 
 

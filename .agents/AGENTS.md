@@ -19,7 +19,10 @@ from implementation detail, and catches tests that were weakened to get green.
 (uncommitted and untracked files count), runs tamper detection on the changed tests,
 collects the rule map with pytest, runs mutmut on the changed functions (twice), triages the
 mutants, and renders one verdict. `recheck` reruns the agent's survivors; `rules check`
-validates the rules file; `init` writes a template and never overwrites. Invariants and the
+validates the rules file; `rules propose`/`reject` (agent) manage
+`.mutineer/proposals.toml`; `rules accept`/`dismiss` (human) turn proposals into rules and
+record answers; `init` writes a template and never overwrites. `init` and `rules accept`
+are the only commands that write outside `mutants/` and `.mutineer/`. Invariants and the
 reasons for them:
 
 - **Promises over details.** Only behaviour named in `.mutineer/rules.toml` is protected.
@@ -42,6 +45,13 @@ reasons for them:
 - **Triage:** survived in both passes → `survivor_rule` for the agent (WARN); caught only by
   an implementation test → `guarded_by_impl_only` for a human; not rule-covered →
   `survivor_unowned` for a human; timeouts and other unclear results count in no score.
+- **Growing the ledger.** Agents propose (`rules propose`) and never mark a test with an
+  id that isn't accepted: triage takes rule ids from the rule map, and
+  `--mutineer-rule-only` keeps any marked test, so it would send `survivor_rule` work and
+  raise `unknown_rule_id`. Proposals are keyed by rule id, answers (`rules dismiss`) by
+  mutmut function name. Answered findings stay in the report, under "Already answered".
+  `accept` and `dismiss` refuse without a TTY unless `--yes` is passed; that is a
+  convention, and the guard is visibility: `rules_file_changed` and `answer_added`.
 - **Changed code mutmut can't mutate is reported, never hidden** (`unmeasured_change`:
   decorated functions, module-level code, files outside `source_paths`, excluded files,
   functions with no mutants), and is left out of every score.
@@ -92,11 +102,14 @@ reasons for them:
 - Fix bugs test-first: a test that reproduces the bug and fails before your change.
 - Tests that prove a rule in `.mutineer/rules.toml` carry `@pytest.mark.rule("<ID>")`. Never
   weaken, skip or delete one without the human changing that rule. Mutineer blocks it.
-  Never edit `.mutineer/rules.toml` yourself; propose changes in your result.
+  Never edit `.mutineer/rules.toml` yourself; propose rules with `mutineer rules propose`,
+  and never run `rules accept` or `rules dismiss`.
 - Never assert on mutmut mutant numbers (`__mutmut_3`); assert on the mutated source text.
 - Unit tests go in `tests/unit/`; end-to-end tests in `tests/e2e/`, marked
   `@pytest.mark.slow` and built on `tests/fixtures/make_fixture.sh`.
-- Mutineer must never write outside `mutants/` and `.mutineer/` in a user's project.
+- Mutineer must never write outside `mutants/` and `.mutineer/` in a user's project,
+  except in the explicit human commands `init` (`.gitignore`) and `rules accept` (the rules
+  file, rule markers in tests).
 - Every pytest run Mutineer starts passes `--ignore=mutants -p no:cacheprovider` and sets
   `PYTHONDONTWRITEBYTECODE=1`. Subprocesses use `sys.executable`.
 - Experiments go in a temporary directory or a fixture copy, never in this repo's tracked

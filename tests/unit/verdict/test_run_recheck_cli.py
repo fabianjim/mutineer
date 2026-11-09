@@ -16,7 +16,7 @@ import mutineer.cli.recheck as recheck_cmd
 import mutineer.cli.run as run_cmd
 from mutineer import state
 from mutineer.cli import main
-from mutineer.models import Diff, EngineRun, MutantResult, MutantStatus, RuleMap
+from mutineer.models import Diff, EngineRun, FunctionRef, MutantResult, MutantStatus, RuleMap
 
 FN = "pkg.mod.x_double"
 RULE_TEST = "tests/test_mod.py::test_double"
@@ -324,3 +324,151 @@ def test_recheck_with_an_uncollectable_suite_keeps_the_survivors(
     (project.path / "tests/test_broken.py").unlink()
     assert main(["recheck", "--format", "agent"]) == 0
     assert engine.reruns == [[f"{FN}__mutmut_1", f"{FN}__mutmut_2"]]
+
+
+##
+# answers
+
+
+ANSWER = """\
+version = 1
+
+[[answer]]
+function = "pkg.mod.x_triple"
+question = "survivor_unowned"
+reason = "{reason}"
+"""
+
+
+def test_run_reports_an_answer_added_since_the_base(
+    project: Any, engine: FakeEngine, capsys: Any
+) -> None:
+    assert main(["run", "--no-mutation", "--format", "json"]) == 0
+    kinds = [f["kind"] for f in json.loads(capsys.readouterr().out)["findings"]]
+    assert "answer_added" not in kinds
+
+    project.write(".mutineer/answers.toml", ANSWER.format(reason="new"))
+    assert main(["run", "--no-mutation", "--format", "json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    added = [f for f in out["findings"] if f["kind"] == "answer_added"]
+    assert [f["message"] for f in added] == [
+        "A human answer was recorded for pkg.mod.x_triple: new"
+    ]
+    assert out["status"] == "pass"
+
+
+def test_an_invalid_answers_file_stops_the_run(
+    project: Any, engine: FakeEngine, capsys: Any
+) -> None:
+    project.write(".mutineer/answers.toml", "version = 2\n")
+    assert main(["run"]) == 4
+    assert ".mutineer/answers.toml" in capsys.readouterr().err
+    assert engine.runs == 0
+
+
+def _base_here(project: Any) -> str:
+    """Commit the worktree and branch ``other`` there, so ``--base other`` diffs from it."""
+    sha: str = project.commit("work")
+    project.git("branch", "other")
+    return sha
+
+
+def test_run_judges_the_diff_from_the_base_it_is_given(
+    project: Any, engine: FakeEngine, capsys: Any
+) -> None:
+    sha = _base_here(project)
+    assert main(["run", "--base", "other", "--format", "json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["base"] == sha
+    assert out["diff_score"] == {"killed": 1, "total": 3}
+    assert 0 < out["duration_s"] < 600
+    saved = state.load(project.path)
+    assert saved is not None
+    assert (saved.base_ref, saved.base) == ("other", sha)
+
+
+def test_an_answer_already_in_the_base_is_not_reported_again(
+    project: Any, engine: FakeEngine, capsys: Any
+) -> None:
+    project.write(".mutineer/answers.toml", ANSWER.format(reason="old"))
+    _base_here(project)
+    assert main(["run", "--base", "other", "--no-mutation", "--format", "json"]) == 0
+    kinds = [f["kind"] for f in json.loads(capsys.readouterr().out)["findings"]]
+    assert "answer_added" not in kinds
+
+
+class UnownedEngine(FakeEngine):
+    """One survivor in ``double``, covered only by a test no rule marks."""
+
+    def run(self, diff: Diff, rule_map: RuleMap, root: Path) -> EngineRun:
+        self.runs += 1
+        result = _result(1, "all", "survived")
+        return EngineRun(
+            baseline_failed=False,
+            functions=[
+                FunctionRef(
+                    mutmut_name=FN,
+                    file="src/pkg/mod.py",
+                    qualname="double",
+                    start_line=1,
+                    end_line=2,
+                )
+            ],
+            unmeasured=[],
+            results=[result],
+            tests_by_function={FN: ["tests/test_mod.py::test_other"]},
+            duration_s=0.5,
+        )
+
+
+def test_run_shows_the_recorded_answer_on_its_question(
+    project: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    monkeypatch.setattr(run_cmd, "make_engine", UnownedEngine)
+    project.write(
+        ".mutineer/answers.toml",
+        ANSWER.replace("pkg.mod.x_triple", FN).format(reason="not a promise"),
+    )
+    assert main(["run", "--format", "json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    (unowned,) = [f for f in out["findings"] if f["kind"] == "survivor_unowned"]
+    assert unowned["evidence"]["answer"] == {
+        "reason": "not a promise",
+        "question": "survivor_unowned",
+    }
+    assert out["diff_score"] == {"killed": 0, "total": 1}
+
+
+def test_a_changed_rule_is_reported_at_the_rules_file(
+    project: Any, engine: FakeEngine, capsys: Any
+) -> None:
+    project.write(".mutineer/rules.toml", RULES.replace("double doubles", "double returns 2x"))
+    assert main(["run", "--no-mutation", "--format", "json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    (changed,) = [f for f in out["findings"] if f["kind"] == "rules_file_changed"]
+    assert changed["location"]["file"] == ".mutineer/rules.toml"
+
+
+SPEC_TEST = """\
+import pytest
+from pkg.mod import double
+
+
+@pytest.mark.rule("DBL-001")
+def test_spec_double():
+    assert double(3) == 6
+"""
+
+
+def test_a_weakened_rule_test_under_a_configured_test_path_blocks(
+    project: Any, engine: FakeEngine, capsys: Any
+) -> None:
+    pyproject = project.path / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text() + '\n[tool.mutineer]\ntest_paths = ["spec"]\n')
+    project.write("spec/test_spec.py", SPEC_TEST)
+    _base_here(project)
+    project.write("spec/test_spec.py", SPEC_TEST.replace("double(3) == 6", "double(3)"))
+    assert main(["run", "--base", "other", "--no-mutation", "--format", "json"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    blocks = [f for f in out["findings"] if f["severity"] == "block"]
+    assert [f["location"]["file"] for f in blocks] == ["spec/test_spec.py"]

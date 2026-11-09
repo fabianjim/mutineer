@@ -225,6 +225,27 @@ def test_new_test_pinning_implementation_is_info(tamper_repo, body, name):
     assert name in findings[0].evidence["names"]
 
 
+@pytest.mark.parametrize(
+    ("body", "name"),
+    [
+        (
+            "import shop.pricing\n\n\ndef test_r():\n    assert shop.pricing._rate(1) == 2\n",
+            "shop.pricing._rate",
+        ),
+        (
+            "from shop import pricing\n\n\ndef test_r():\n    assert pricing._rate(1) == 2\n",
+            "pricing._rate",
+        ),
+    ],
+    ids=["dotted_import", "imported_module"],
+)
+def test_a_private_attribute_of_an_imported_source_module_pins(tamper_repo, body, name):
+    tamper_repo.base({TEST: PRICING_TEST})
+    findings = tamper_repo.head({"tests/test_pins.py": body})
+    assert _kinds(findings) == ["pins_implementation"]
+    assert name in findings[0].evidence["names"]
+
+
 def test_existing_pinning_is_not_reported_again(tamper_repo):
     base = "from shop.pricing import _rate\n\n\ndef test_r():\n    assert _rate(1) == 2\n"
     tamper_repo.base({TEST: base})

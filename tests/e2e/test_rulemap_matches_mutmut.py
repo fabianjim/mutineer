@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from mutineer.config import Config
 from mutineer.rules import collect_rule_map
 
 pytestmark = pytest.mark.slow
@@ -35,7 +34,7 @@ def test_rule_map_node_ids_equal_mutmut_stats_for_quote(_shop_repo_session, tmp_
     stats = json.loads(Path(root, "mutants/mutmut-stats.json").read_text())
     covering = set(stats["tests_by_mangled_function_name"]["shop.shipping.x_quote"])
 
-    rule_map = collect_rule_map(root, Config())
+    rule_map = collect_rule_map(root)
 
     assert sorted(rule_map) == [
         "tests/rules/test_shipping_rules.py::test_small_order_pays",

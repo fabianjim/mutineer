@@ -63,6 +63,49 @@ RuleMap = dict[str, list[str]]
 """pytest node id -> sorted rule ids."""
 
 
+class Proposal(_Model, extra="forbid"):
+    """A rule, or more tests for a rule, proposed with ``mutineer rules propose``."""
+
+    id: str = Field(pattern=RULE_ID_PATTERN)
+    statement: str | None = None
+    """None: the proposal adds tests to the existing rule ``id``."""
+    seam: str | None = None
+    tests: list[str] = []
+    """pytest node ids, as collected (a parametrize-free form matches every case)."""
+
+
+class ProposalsFile(_Model, extra="forbid", populate_by_name=True):
+    version: Literal[1] = 1
+    proposals: list[Proposal] = Field(default_factory=list, alias="proposal")
+    """TOML ``[[proposal]]`` tables."""
+
+
+class Answer(_Model, extra="forbid"):
+    """A human's "no" to a triage question, kept in ``.mutineer/answers.toml``.
+
+    Keyed by ``function``, the mutmut name, because finding ids are renumbered on every
+    run, lines move and qualnames aren't unique; the mutmut name is unique and stays the
+    same while the function keeps its module and name.
+    """
+
+    function: str
+    """mutmut name, such as ``shop.pricing.x_loyalty_points``."""
+    question: Literal["survivor_unowned", "guarded_by_impl_only"]
+    rules: list[str] = []
+    """``guarded_by_impl_only``: the rule ids it asked about, sorted."""
+    reason: str
+    file: str | None = None
+    """For readers only; not used to match."""
+    qualname: str | None = None
+    """For readers only; not used to match."""
+
+
+class AnswersFile(_Model, extra="forbid", populate_by_name=True):
+    version: Literal[1] = 1
+    answers: list[Answer] = Field(default_factory=list, alias="answer")
+    """TOML ``[[answer]]`` tables."""
+
+
 # ---- diff ----
 
 
