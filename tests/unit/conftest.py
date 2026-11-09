@@ -53,7 +53,7 @@ class TamperRepo:
 
     def findings(self, *, test_paths: tuple[str, ...] = ("tests",)) -> list[Finding]:
         diff = load_diff(self.path, None, ".mutineer/rules.toml")
-        return tamper.check(diff, self.path, None, test_paths=test_paths)
+        return tamper.check(diff, self.path, test_paths=test_paths)
 
 
 @pytest.fixture

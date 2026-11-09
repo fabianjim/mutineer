@@ -25,7 +25,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from mutineer.gitdiff import read_base_file
-from mutineer.models import Audience, ChangedFile, Diff, Finding, Location, RulesFile, Severity
+from mutineer.models import Audience, ChangedFile, Diff, Finding, Location, Severity
 from mutineer.testscan import (
     NOT_LITERAL,
     Assertion,
@@ -117,17 +117,13 @@ class Detection:
 def check(
     diff: Diff,
     root: Path,
-    rules: RulesFile | None = None,
     *,
     test_paths: Sequence[str] = ("tests",),
 ) -> list[Finding]:
     """Tamper findings for ``diff``, ordered by file and line.
 
-    ``rules`` is the head rules file. Rule-test identity is static (the markers in the
-    test source), so it is accepted for the contract but not needed today.
     ``test_paths`` comes from ``[tool.mutineer] test_paths``.
     """
-    del rules
     changed_rules = set(diff.rules_file_changed_ids)
     base_tests, head_tests = _load_tests(diff, root, test_paths)
     findings: list[Finding] = []
@@ -639,9 +635,10 @@ def _special_cases(
     """Changed source lines comparing to a literal that the tests also use.
 
     Narrowed against false positives: a literal that already appears in tracked source
-    outside the changed lines is a known domain value (a status string, a file name),
-    not a test input being special-cased, so it is not reported. One finding per file
-    and literal.
+    outside the changed lines, or that source defines anywhere (changed lines included,
+    see ``_known_source_literals``), is a known domain value (a status string, a file
+    name), not a test input being special-cased, so it is not reported. One finding per
+    file and literal.
     """
     changed_lines = {
         cf.path: {n for h in cf.hunks for n in range(h.start, h.start + h.length)} for cf in files
@@ -690,7 +687,14 @@ def _special_cases(
 def _known_source_literals(
     root: Path, test_paths: Sequence[str], changed_lines: dict[str, set[int]]
 ) -> set[tuple[str, object]]:
-    """Literals in tracked non-test source, outside the lines this diff changed."""
+    """Literals tracked non-test source knows as values.
+
+    A literal is known when it appears outside the lines this diff changed, or anywhere
+    (changed lines included) in a defining position: a ``Literal[...]`` annotation, an
+    assignment value, a keyword argument value, a dict display key or value, or the key
+    of a stored subscript. In those positions an element of a tuple, list or set display
+    counts too. A literal the diff only compares to is not known.
+    """
     known: set[tuple[str, object]] = set()
     for rel in _tracked_python(root):
         if is_under(rel, test_paths) or PurePosixPath(rel).name == "conftest.py":
@@ -702,7 +706,40 @@ def _known_source_literals(
         for node, value in _constants(tree):
             if getattr(node, "lineno", 0) not in skip:
                 known.add(_lit_key(value))
+        known.update(_defined_literals(tree))
     return known
+
+
+def _defined_literals(tree: ast.Module) -> Iterable[tuple[str, object]]:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript) and (
+            _is_literal_type(node.value) or isinstance(node.ctx, ast.Store)
+        ):
+            yield from _display_literals(node.slice)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.keyword)) and node.value:
+            yield from _display_literals(node.value)
+        elif isinstance(node, ast.Dict):
+            for part in (*node.keys, *node.values):
+                if part is not None:
+                    yield from _display_literals(part)
+
+
+_LITERAL_TYPE = "Literal"
+
+
+def _is_literal_type(node: ast.expr) -> bool:
+    if isinstance(node, ast.Attribute):
+        return node.attr == _LITERAL_TYPE
+    return isinstance(node, ast.Name) and node.id == _LITERAL_TYPE
+
+
+def _display_literals(node: ast.expr) -> Iterable[tuple[str, object]]:
+    """The constant ``node`` is, or the constants a tuple, list or set display holds."""
+    parts = node.elts if isinstance(node, (ast.Tuple, ast.List, ast.Set)) else [node]
+    for part in parts:
+        value = _const(part)
+        if value is not _NO_CONST:
+            yield _lit_key(value)
 
 
 def _tracked_python(root: Path) -> list[str]:

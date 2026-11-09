@@ -10,15 +10,13 @@ from mutineer.checks import tamper
 from mutineer.cli import main
 from mutineer.gitdiff import load_diff
 from mutineer.models import Severity
-from mutineer.rules import load_rules
 
 
 def _findings(shop_repo, branch):
     shop_repo.checkout(branch)
     root = shop_repo.path
     diff = load_diff(root, "main", ".mutineer/rules.toml")
-    rules = load_rules((root / ".mutineer/rules.toml").read_text())
-    return tamper.check(diff, root, rules, test_paths=["tests"])
+    return tamper.check(diff, root, test_paths=["tests"])
 
 
 def _assert_weakened_ship_003(finding, severity):

@@ -280,6 +280,80 @@ def test_literal_already_used_elsewhere_in_source_is_a_domain_value(tamper_repo)
     assert tamper_repo.head({SRC: head}) == []
 
 
+def test_a_root_conftest_is_test_config_not_source(tamper_repo):
+    tamper_repo.base({"conftest.py": "def pytest_x(c):\n    pass\n", TEST: PRICING_TEST})
+    head = 'def pytest_x(c):\n    if c == "vip-gold-37":\n        pass\n'
+    assert _kinds(tamper_repo.head({"conftest.py": head})) == ["test_config_changed"]
+
+
+DISPUTES = "src/shop/disputes.py"
+DISPUTES_TEST = "tests/test_disputes.py"
+
+
+def _dispute_change(tamper_repo, definition):
+    # the change defines "confirmed" in one source module and compares to it in another;
+    # both modules exist at base so they are tracked
+    tamper_repo.base(
+        {
+            "src/shop/models.py": "class Dispute:\n    pass\n",
+            DISPUTES: "def is_closed(d):\n    return False\n",
+            DISPUTES_TEST: 'def test_closed():\n    assert d("confirmed")\n',
+        }
+    )
+    head = 'def is_closed(d):\n    if d.status == "confirmed":\n        return True\n'
+    return tamper_repo.head({"src/shop/models.py": "class Dispute:\n" + definition, DISPUTES: head})
+
+
+@pytest.mark.parametrize("literal", ["Literal", "typing.Literal"])
+def test_a_value_the_change_defines_in_a_literal_annotation_is_a_domain_value(tamper_repo, literal):
+    definition = f'    status: {literal}["open", "confirmed", "rejected"] | None = None\n'
+    assert _dispute_change(tamper_repo, definition) == []
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        '    def close(self, evidence):\n        evidence["confirmed"] = True\n',
+        '    def close(self):\n        return make(kind="confirmed")\n',
+        '    CONFIRMED = "confirmed"\n',
+        '    status: str = "confirmed"\n',
+        '    STATUSES = ("open", "confirmed")\n',
+        '    def close(self):\n        return make(kind=["open", "confirmed"])\n',
+        '    LABELS = {"confirmed": "Confirmed"}\n',
+        '    LABELS = {"done": "confirmed"}\n',
+    ],
+    ids=[
+        "stored_subscript",
+        "keyword_argument",
+        "enum_member",
+        "annotated_assignment",
+        "tuple_in_assignment",
+        "list_in_keyword_argument",
+        "dict_key",
+        "dict_value",
+    ],
+)
+def test_a_value_the_change_defines_is_a_domain_value(tamper_repo, definition):
+    assert _dispute_change(tamper_repo, definition) == []
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        '    def close(self):\n        return self.status != "confirmed"\n',
+        '    def close(self):\n        return log("confirmed")\n',
+        '    def close(self):\n        x = log("confirmed")\n        return x\n',
+        '    def close(self, evidence):\n        return evidence["confirmed"]\n',
+    ],
+    ids=["second_compare", "positional_argument", "nested_in_assignment", "loaded_subscript"],
+)
+def test_a_value_the_change_uses_only_in_non_defining_positions_still_warns(
+    tamper_repo, definition
+):
+    findings = _dispute_change(tamper_repo, definition)
+    assert ("special_case_suspected", DISPUTES) in [(f.kind, f.location.file) for f in findings]
+
+
 def test_one_finding_per_file_and_literal(tamper_repo):
     tamper_repo.base({SRC: PRICING, TEST: PRICING_TEST})
     head = PRICING.replace(

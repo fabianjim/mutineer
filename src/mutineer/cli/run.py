@@ -141,7 +141,7 @@ def static_checks(root: Path, config: Config, base_ref: str) -> StaticChecks:
     )
     rules_changes = [*rules_changes, *answers_added, *disputes_confirmed]
     test_paths = _test_paths(root, diff.base, config)
-    tamper_findings = tamper.check(diff, root, head_rules, test_paths=test_paths)
+    tamper_findings = tamper.check(diff, root, test_paths=test_paths)
     try:
         rule_map = collect_rule_map(root)
     except CollectionError as exc:

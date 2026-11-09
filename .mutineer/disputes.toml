@@ -419,3 +419,53 @@ reason = "the last element of rsplit is the same with maxsplit 1 or 2"
 status = "confirmed"
 file = "src/mutineer/seams.py"
 line = 101
+
+[[dispute]]
+function = "mutineer.checks.tamper.x_check"
+original = "and f.status != \"deleted\""
+mutated = "and f.status != \"XXdeletedXX\""
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "a deleted file has no head text, so _eq_overrides and _special_cases skip it whether or not it is in source_files"
+status = "confirmed"
+file = "src/mutineer/checks/tamper.py"
+line = 138
+
+[[dispute]]
+function = "mutineer.checks.tamper.x_check"
+original = "and f.status != \"deleted\""
+mutated = "and f.status != \"DELETED\""
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "a deleted file has no head text, so _eq_overrides and _special_cases skip it whether or not it is in source_files"
+status = "confirmed"
+file = "src/mutineer/checks/tamper.py"
+line = 138
+
+[[dispute]]
+function = "mutineer.checks.tamper.x_check"
+original = "findings.sort(key=lambda f: (f.location.file if f.location else \"\", _line(f)))"
+mutated = "findings.sort(key=lambda f: (f.location.file if (f.location) and False else \"\", _line(f)))"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "every tamper finding is built with a Location (Detection.location is not optional), so the else branch of the sort key never runs"
+status = "confirmed"
+file = "src/mutineer/checks/tamper.py"
+line = 144
+
+[[dispute]]
+function = "mutineer.checks.tamper.x_check"
+original = "findings.sort(key=lambda f: (f.location.file if f.location else \"\", _line(f)))"
+mutated = "findings.sort(key=lambda f: (f.location.file if (f.location) or True else \"\", _line(f)))"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "every tamper finding is built with a Location (Detection.location is not optional), so the else branch of the sort key never runs"
+status = "confirmed"
+file = "src/mutineer/checks/tamper.py"
+line = 144
+
+[[dispute]]
+function = "mutineer.checks.tamper.x_check"
+original = "findings.sort(key=lambda f: (f.location.file if f.location else \"\", _line(f)))"
+mutated = "findings.sort(key=lambda f: (f.location.file if f.location else \"XXXX\", _line(f)))"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "every tamper finding is built with a Location (Detection.location is not optional), so the else branch of the sort key never runs"
+status = "confirmed"
+file = "src/mutineer/checks/tamper.py"
+line = 144
