@@ -1,0 +1,421 @@
+# Surviving mutants an agent disputed with `mutineer dispute`, and the human's response
+# (`mutineer resolve --confirm` or `--reject`). Mutineer rewrites this file; comments are
+# not kept.
+version = 1
+
+[[dispute]]
+function = "mutineer.cli.run.x_run"
+original = "base_ref = gitdiff.resolve_base_ref(root, base or config.base)"
+mutated = "base_ref = gitdiff.resolve_base_ref(None, base or config.base)"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "root is Path.cwd() on the line above and git runs with cwd=None, the current directory, so it is the same repo"
+status = "confirmed"
+file = "src/mutineer/cli/run.py"
+line = 59
+
+[[dispute]]
+function = "mutineer.cli.run.x_run"
+original = "engine_run = make_engine().run(checked.diff, checked.rule_map, root)"
+mutated = "engine_run = make_engine().run(None, checked.rule_map, root)"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "the seam doesn't reach this code: the VERDICT rule tests reach run() only through the CLI with a fake engine; the real engine gets these arguments in the slow end-to-end tests"
+status = "confirmed"
+response = "utf-8 is the guard; engine wiring is covered end to end"
+file = "src/mutineer/cli/run.py"
+line = 65
+
+[[dispute]]
+function = "mutineer.cli.run.x_run"
+original = "engine_run = make_engine().run(checked.diff, checked.rule_map, root)"
+mutated = "engine_run = make_engine().run(checked.diff, None, root)"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "the seam doesn't reach this code: the VERDICT rule tests reach run() only through the CLI with a fake engine; the real engine gets these arguments in the slow end-to-end tests"
+status = "confirmed"
+response = "utf-8 is the guard; engine wiring is covered end to end"
+file = "src/mutineer/cli/run.py"
+line = 65
+
+[[dispute]]
+function = "mutineer.cli.run.x_run"
+original = "engine_run = make_engine().run(checked.diff, checked.rule_map, root)"
+mutated = "engine_run = make_engine().run(checked.diff, checked.rule_map, None)"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "the seam doesn't reach this code: the VERDICT rule tests reach run() only through the CLI with a fake engine; the real engine gets these arguments in the slow end-to-end tests"
+status = "confirmed"
+response = "utf-8 is the guard; engine wiring is covered end to end"
+file = "src/mutineer/cli/run.py"
+line = 65
+
+[[dispute]]
+function = "mutineer.cli.run.x_run"
+original = "seam_reached=seam_reach(root),"
+mutated = "seam_reached=None,"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "the seam doesn't reach this code: the VERDICT rule tests reach run() only through CLI wiring; seam_reach itself is tested through triage"
+status = "confirmed"
+response = "utf-8 is the guard; engine wiring is covered end to end"
+file = "src/mutineer/cli/run.py"
+line = 71
+
+[[dispute]]
+function = "mutineer.cli.run.x_run"
+original = "seam_reached=seam_reach(root),\n)"
+mutated = ")"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "the seam doesn't reach this code: the VERDICT rule tests reach run() only through CLI wiring; seam_reach itself is tested through triage"
+status = "confirmed"
+response = "utf-8 is the guard; engine wiring is covered end to end"
+file = "src/mutineer/cli/run.py"
+line = 71
+
+[[dispute]]
+function = "mutineer.cli.run.x_static_checks"
+original = "_base_rules(root, diff.base, config), head_rules, rules_file=config.rules_file"
+mutated = "_base_rules(None, diff.base, config), head_rules, rules_file=config.rules_file"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "root is Path.cwd() in both callers and git runs with cwd=None, the current directory, so it is the same repo"
+status = "confirmed"
+file = "src/mutineer/cli/run.py"
+line = 133
+
+[[dispute]]
+function = "mutineer.cli.run.x_static_checks"
+original = "gitdiff.read_base_file(root, diff.base, ANSWERS_FILE), recorded.answers"
+mutated = "gitdiff.read_base_file(None, diff.base, ANSWERS_FILE), recorded.answers"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "root is Path.cwd() in both callers and git runs with cwd=None, the current directory, so it is the same repo"
+status = "confirmed"
+file = "src/mutineer/cli/run.py"
+line = 137
+
+[[dispute]]
+function = "mutineer.cli.run.x_static_checks"
+original = "gitdiff.read_base_file(root, diff.base, DISPUTES_FILE), recorded.disputes"
+mutated = "gitdiff.read_base_file(None, diff.base, DISPUTES_FILE), recorded.disputes"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "root is Path.cwd() in both callers and git runs with cwd=None, the current directory, so it is the same repo"
+status = "confirmed"
+file = "src/mutineer/cli/run.py"
+line = 140
+
+[[dispute]]
+function = "mutineer.cli.run.x_static_checks"
+original = "test_paths = _test_paths(root, diff.base, config)"
+mutated = "test_paths = _test_paths(None, diff.base, config)"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "root is Path.cwd() in both callers and git runs with cwd=None, the current directory, so it is the same repo"
+status = "confirmed"
+file = "src/mutineer/cli/run.py"
+line = 143
+
+[[dispute]]
+function = "mutineer.cli.run.x_static_checks"
+original = "tamper_findings = tamper.check(diff, root, head_rules, test_paths=test_paths)"
+mutated = "tamper_findings = tamper.check(diff, root, None, test_paths=test_paths)"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "tamper.check accepts the head rules for its contract but never reads them (see its docstring)"
+status = "confirmed"
+file = "src/mutineer/cli/run.py"
+line = 144
+
+[[dispute]]
+function = "mutineer.cli.run.x_static_checks"
+original = "tamper_findings = tamper.check(diff, root, head_rules, test_paths=test_paths)"
+mutated = "tamper_findings = tamper.check(diff, root, test_paths=test_paths)"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "tamper.check accepts the head rules for its contract but never reads them (see its docstring)"
+status = "confirmed"
+file = "src/mutineer/cli/run.py"
+line = 144
+
+[[dispute]]
+function = "mutineer.cli.run.x_static_checks"
+original = "rule_map = {}"
+mutated = "rule_map = None"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "rule_map is only read when the suite isn't broken; run and recheck skip mutation and triage when suite_broken is set"
+status = "confirmed"
+file = "src/mutineer/cli/run.py"
+line = 148
+
+[[dispute]]
+function = "mutineer.cli.run.x_static_checks"
+original = "suite_broken = False"
+mutated = "suite_broken = None"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "suite_broken is only read as a truth value, and None is falsy like False"
+status = "confirmed"
+file = "src/mutineer/cli/run.py"
+line = 153
+
+[[dispute]]
+function = "mutineer.ledger.x_load_disputes"
+original = "text = path.read_text(encoding=\"utf-8\")"
+mutated = "text = path.read_text(encoding=None)"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "encoding=None uses the locale encoding, which is UTF-8 where Mutineer runs and is tested (macOS, Linux, Python UTF-8 mode); no test environment here can observe it"
+status = "confirmed"
+response = "utf-8 is the guard; engine wiring is covered end to end"
+file = "src/mutineer/ledger.py"
+line = 499
+
+[[dispute]]
+function = "mutineer.ledger.x_load_disputes"
+original = "text = path.read_text(encoding=\"utf-8\")"
+mutated = "text = path.read_text(encoding=\"UTF-8\")"
+rules = ["VERDICT-001", "VERDICT-002"]
+reason = "UTF-8 and utf-8 name the same codec"
+status = "confirmed"
+file = "src/mutineer/ledger.py"
+line = 499
+
+[[dispute]]
+function = "mutineer.reporters.agent.x_render"
+original = "return json.dumps(dump(report(verdict)), ensure_ascii=False, separators=(\",\", \":\")) + \"\\n\""
+mutated = "return json.dumps(dump(report(verdict)), ensure_ascii=None, separators=(\",\", \":\")) + \"\\n\""
+rules = ["TRIAGE-001"]
+reason = "ensure_ascii is only read as a truth value, and None is falsy like False"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 41
+
+[[dispute]]
+function = "mutineer.reporters.agent.x_dump"
+original = "out = r.model_dump(mode=\"json\", exclude={\"findings\"})"
+mutated = "out = r.model_dump(mode=None, exclude={\"findings\"})"
+rules = ["TRIAGE-001"]
+reason = "pydantic dumps these models the same in python and json mode: every field is a str, int, None, list or dict of JSON values, which json.dumps writes identically"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 58
+
+[[dispute]]
+function = "mutineer.reporters.agent.x_dump"
+original = "out = r.model_dump(mode=\"json\", exclude={\"findings\"})"
+mutated = "out = r.model_dump(exclude={\"findings\"})"
+rules = ["TRIAGE-001"]
+reason = "pydantic dumps these models the same in python and json mode: every field is a str, int, None, list or dict of JSON values, which json.dumps writes identically"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 58
+
+[[dispute]]
+function = "mutineer.reporters.agent.x_dump"
+original = "out = r.model_dump(mode=\"json\", exclude={\"findings\"})"
+mutated = "out = r.model_dump(mode=\"XXjsonXX\", exclude={\"findings\"})"
+rules = ["TRIAGE-001"]
+reason = "pydantic dumps these models the same in python and json mode: every field is a str, int, None, list or dict of JSON values, which json.dumps writes identically"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 58
+
+[[dispute]]
+function = "mutineer.reporters.agent.x_dump"
+original = "out = r.model_dump(mode=\"json\", exclude={\"findings\"})"
+mutated = "out = r.model_dump(mode=\"JSON\", exclude={\"findings\"})"
+rules = ["TRIAGE-001"]
+reason = "pydantic dumps these models the same in python and json mode: every field is a str, int, None, list or dict of JSON values, which json.dumps writes identically"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 58
+
+[[dispute]]
+function = "mutineer.reporters.agent.x__compact"
+original = "out = f.model_dump(mode=\"json\")"
+mutated = "out = f.model_dump(mode=None)"
+rules = ["TRIAGE-001"]
+reason = "pydantic dumps these models the same in python and json mode: every field is a str, int, None, list or dict of JSON values, which json.dumps writes identically"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 103
+
+[[dispute]]
+function = "mutineer.reporters.agent.x__compact"
+original = "out = f.model_dump(mode=\"json\")"
+mutated = "out = f.model_dump(mode=\"XXjsonXX\")"
+rules = ["TRIAGE-001"]
+reason = "pydantic dumps these models the same in python and json mode: every field is a str, int, None, list or dict of JSON values, which json.dumps writes identically"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 103
+
+[[dispute]]
+function = "mutineer.reporters.agent.x__compact"
+original = "out = f.model_dump(mode=\"json\")"
+mutated = "out = f.model_dump(mode=\"JSON\")"
+rules = ["TRIAGE-001"]
+reason = "pydantic dumps these models the same in python and json mode: every field is a str, int, None, list or dict of JSON values, which json.dumps writes identically"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 103
+
+[[dispute]]
+function = "mutineer.reporters.agent.x__compact"
+original = "out[\"location\"] = f.location.model_dump(mode=\"json\", exclude_none=True)"
+mutated = "out[\"location\"] = f.location.model_dump(mode=None, exclude_none=True)"
+rules = ["TRIAGE-001"]
+reason = "pydantic dumps these models the same in python and json mode: every field is a str, int, None, list or dict of JSON values, which json.dumps writes identically"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 107
+
+[[dispute]]
+function = "mutineer.reporters.agent.x__compact"
+original = "out[\"location\"] = f.location.model_dump(mode=\"json\", exclude_none=True)"
+mutated = "out[\"location\"] = f.location.model_dump(exclude_none=True)"
+rules = ["TRIAGE-001"]
+reason = "pydantic dumps these models the same in python and json mode: every field is a str, int, None, list or dict of JSON values, which json.dumps writes identically"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 107
+
+[[dispute]]
+function = "mutineer.reporters.agent.x__compact"
+original = "out[\"location\"] = f.location.model_dump(mode=\"json\", exclude_none=True)"
+mutated = "out[\"location\"] = f.location.model_dump(mode=\"XXjsonXX\", exclude_none=True)"
+rules = ["TRIAGE-001"]
+reason = "pydantic dumps these models the same in python and json mode: every field is a str, int, None, list or dict of JSON values, which json.dumps writes identically"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 107
+
+[[dispute]]
+function = "mutineer.reporters.agent.x__compact"
+original = "out[\"location\"] = f.location.model_dump(mode=\"json\", exclude_none=True)"
+mutated = "out[\"location\"] = f.location.model_dump(mode=\"JSON\", exclude_none=True)"
+rules = ["TRIAGE-001"]
+reason = "pydantic dumps these models the same in python and json mode: every field is a str, int, None, list or dict of JSON values, which json.dumps writes identically"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 107
+
+[[dispute]]
+function = "mutineer.reporters.agent.x_dump"
+original = "out = r.model_dump(mode=\"json\", exclude={\"findings\"})"
+mutated = "out = r.model_dump(mode=\"json\", exclude=None)"
+rules = ["TRIAGE-001"]
+reason = "the findings key that exclude drops is overwritten on the next line, so including it changes nothing"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 58
+
+[[dispute]]
+function = "mutineer.reporters.agent.x_dump"
+original = "out = r.model_dump(mode=\"json\", exclude={\"findings\"})"
+mutated = "out = r.model_dump(mode=\"json\", )"
+rules = ["TRIAGE-001"]
+reason = "the findings key that exclude drops is overwritten on the next line, so including it changes nothing"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 58
+
+[[dispute]]
+function = "mutineer.reporters.agent.x_dump"
+original = "out = r.model_dump(mode=\"json\", exclude={\"findings\"})"
+mutated = "out = r.model_dump(mode=\"json\", exclude={\"XXfindingsXX\"})"
+rules = ["TRIAGE-001"]
+reason = "the findings key that exclude drops is overwritten on the next line, so including it changes nothing"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 58
+
+[[dispute]]
+function = "mutineer.reporters.agent.x_dump"
+original = "out = r.model_dump(mode=\"json\", exclude={\"findings\"})"
+mutated = "out = r.model_dump(mode=\"json\", exclude={\"FINDINGS\"})"
+rules = ["TRIAGE-001"]
+reason = "the findings key that exclude drops is overwritten on the next line, so including it changes nothing"
+status = "confirmed"
+file = "src/mutineer/reporters/agent.py"
+line = 58
+
+[[dispute]]
+function = "mutineer.triage.x_triage"
+original = "any_rule_covered = False"
+mutated = "any_rule_covered = None"
+rules = ["TRIAGE-001", "TRIAGE-002", "VERDICT-002"]
+reason = "any_rule_covered is only read as a truth value, and None is falsy like False"
+status = "confirmed"
+file = "src/mutineer/triage.py"
+line = 214
+
+[[dispute]]
+function = "mutineer.triage.x_triage"
+original = "dispute = disputes.get(m.key) if m.key is not None else None"
+mutated = "dispute = disputes.get(m.key) if (m.key is not None) or True else None"
+rules = ["TRIAGE-001", "TRIAGE-002", "VERDICT-002"]
+reason = "disputes is keyed by tuples, so disputes.get(None) is None, the same as the else branch"
+status = "confirmed"
+file = "src/mutineer/triage.py"
+line = 257
+
+[[dispute]]
+function = "mutineer.triage.x__seam_reach"
+original = "tests = sorted(t for t in rule_tests if rule_id in rule_map.get(t, []))"
+mutated = "tests = sorted(t for t in rule_tests if rule_id in rule_map.get(t, None))"
+rules = ["TRIAGE-001", "TRIAGE-002"]
+reason = "rule_tests holds only tests whose rule_map entry is truthy, so get never falls back to its default"
+status = "confirmed"
+file = "src/mutineer/triage.py"
+line = 392
+
+[[dispute]]
+function = "mutineer.triage.x__seam_reach"
+original = "tests = sorted(t for t in rule_tests if rule_id in rule_map.get(t, []))"
+mutated = "tests = sorted(t for t in rule_tests if rule_id in rule_map.get(t, ))"
+rules = ["TRIAGE-001", "TRIAGE-002"]
+reason = "rule_tests holds only tests whose rule_map entry is truthy, so get never falls back to its default"
+status = "confirmed"
+file = "src/mutineer/triage.py"
+line = 392
+
+[[dispute]]
+function = "mutineer.seams.x_seam_reach"
+original = "source = (root / path).read_text(encoding=\"utf-8\")"
+mutated = "source = (root / path).read_text(encoding=None)"
+rules = ["TRIAGE-001"]
+reason = "encoding=None uses the locale encoding, which is UTF-8 where Mutineer runs and is tested (macOS, Linux, Python UTF-8 mode); no test environment here can observe it"
+status = "confirmed"
+response = "utf-8 is the guard; engine wiring is covered end to end"
+file = "src/mutineer/seams.py"
+line = 74
+
+[[dispute]]
+function = "mutineer.seams.x_seam_reach"
+original = "source = (root / path).read_text(encoding=\"utf-8\")"
+mutated = "source = (root / path).read_text(encoding=\"UTF-8\")"
+rules = ["TRIAGE-001"]
+reason = "UTF-8 and utf-8 name the same codec"
+status = "confirmed"
+file = "src/mutineer/seams.py"
+line = 74
+
+[[dispute]]
+function = "mutineer.seams.x_seam_reach"
+original = "trees[path] = ast.parse(source, filename=path)"
+mutated = "trees[path] = ast.parse(source, )"
+rules = ["TRIAGE-001"]
+reason = "the filename only appears in a SyntaxError, which is caught and turned into 'reaches'; nothing reads its message"
+status = "confirmed"
+file = "src/mutineer/seams.py"
+line = 75
+
+[[dispute]]
+function = "mutineer.seams.x_seam_reach"
+original = "name = seam.rsplit(\".\", 1)[-1]"
+mutated = "name = seam.rsplit(\".\", )[-1]"
+rules = ["TRIAGE-001"]
+reason = "the last element of rsplit is the same with or without maxsplit 1"
+status = "confirmed"
+file = "src/mutineer/seams.py"
+line = 101
+
+[[dispute]]
+function = "mutineer.seams.x_seam_reach"
+original = "name = seam.rsplit(\".\", 1)[-1]"
+mutated = "name = seam.rsplit(\".\", 2)[-1]"
+rules = ["TRIAGE-001"]
+reason = "the last element of rsplit is the same with maxsplit 1 or 2"
+status = "confirmed"
+file = "src/mutineer/seams.py"
+line = 101

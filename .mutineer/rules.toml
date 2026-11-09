@@ -20,7 +20,7 @@ seam = "mutineer.verdict.decide"
 
 [[rule]]
 id = "TRIAGE-001"
-statement = "Only mutants that no test catches, in functions a rule test covers, are sent to the agent"
+statement = "The agent payload lists only mutants that no test catches in functions a rule test covers"
 seam = "mutineer.triage.triage"
 
 [[rule]]
