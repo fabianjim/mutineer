@@ -21,7 +21,8 @@ on, verified against mutmut 3.8.1. When upgrading mutmut, check each one again: 
   `.max_workers`, `.test_runner_class` and `.test_runner_args` (read),
   `PytestRunner.run_stats` (called), `mutmut.models.results.StatsResult` and `state()`'s
   `function_dependencies` and `stats_time` (merged), to split the stats run under
-  `forkserver` (see "The cache").
+  `forkserver` (see "The cache"); `mutmut.runners.harness.PytestRunner.execute_pytest`
+  (replaced), to give every pytest session its own basetemp (see "Temp dirs").
 - **Scope to files** with `only_mutate`. An empty `only_mutate` means every file matches, so
   never pass it empty.
 - **Scope to functions** with fnmatch globs: `mutmut run "shop.pricing.x_discount__mutmut_*"`.
@@ -164,6 +165,39 @@ stats runs in the process the mutants fork from, and the clean run relies on tha
   hits but none match any mutant key`. A project setup problem (e.g. `pythonpath` makes tests
   import `foo` instead of `pkg.foo`), raised as `EngineError` with the output.
 - `FAILED: Unable to force test failures` is also an `EngineError`.
+
+## Temp dirs
+
+mutmut runs several pytest sessions at once: the mutants (`max_children` forked children),
+and alongside them the stats run (split into children under `forkserver`), the clean and
+forced-fail runs, the test listing and the forkserver warm-up. By default every one of them
+uses pytest's shared temp root, `$TMPDIR/pytest-of-<user>/`: each session makes a numbered
+`pytest-<n>` there, re-points `pytest-current` at it and, when it finishes, removes old
+numbered dirs and dead symlinks. Two sessions that finish together can both try to unlink
+the same dead `pytest-current` and one fails with `FileNotFoundError`. The test outcome is
+lost and the crash becomes the mutant's status: under `fork` a killed mutant (a survivor
+disappears), under `forkserver` a timeout (exit 255). It happened 0–2 times in a large run,
+so two identical runs could give different scores.
+
+So for `run` the launcher makes one temp dir, `mutineer-pytest-*` in the system temp dir
+(never under `mutants/`, which pytest collects from), and replaces
+`PytestRunner.execute_pytest`, through which mutmut starts every pytest session, so that
+each call adds a plugin to `pytest.main`'s `plugins`. Its `pytest_configure` hook (marked
+`tryfirst`, so it runs before pytest's `tmpdir` plugin reads the option) sets
+`config.option.basetemp` to a new dir under the launcher's dir when it is unset. The dir is
+made in the process that calls `pytest.main`: each forked mutant and each split stats child
+gets its own. With a given basetemp pytest makes no numbered dirs, no `pytest-current` link
+and cleans up no other session's dirs. The launcher removes its dir when it finishes, also
+on failure, and only in its own process: forked children leave through `os._exit`, and one
+that escaped with an exception must not remove a dir its siblings still use.
+
+A project that sets its own `--basetemp` (in `[tool.mutmut] pytest_add_cli_args`, pytest
+`addopts` or `PYTEST_ADDOPTS`) keeps it: the plugin only fills an unset option, so every
+session uses the project's dir, as without Mutineer. Concurrent children then share that
+dir, and pytest empties it at the start of each session, so such a project can still get
+wrong statuses; Mutineer doesn't detect or work around it. A relative `--basetemp` resolves
+under `mutants/`, mutmut's working directory. Mutineer's own pytest runs (the baseline and
+the rule map) run alone and keep pytest's default.
 
 ## Platforms
 

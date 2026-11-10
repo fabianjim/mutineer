@@ -82,6 +82,9 @@ nothing. Invariants and the reasons for them:
   - under `forkserver`, split the stats run round-robin over `min(max_children, 4, tests)`
     children; never under `fork`, because there stats runs in the process the mutants fork
     from, and the clean run relies on that;
+  - give every pytest session mutmut starts its own basetemp, unless the project sets one:
+    sessions sharing pytest's default temp root crash in its cleanup when they finish
+    together, and the crash becomes a false kill or timeout;
   - map exit codes to statuses yourself; use per-function globs, because an exact name
     raises `KeyError` when its function has no stats entry;
   - `engine/_launch.py` is the only module touching mutmut internals; it overrides mutmut's

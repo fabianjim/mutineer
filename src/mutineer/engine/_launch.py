@@ -31,6 +31,18 @@ the listing makes the stats run fail, as one in the stats run itself does. Under
 stats runs in the launcher process, the one every mutant forks from, and the clean run checks
 that the tests pass a second time there, so moving stats into children would break it.
 
+``run`` gives every pytest session mutmut starts its own basetemp. Sessions run
+concurrently (mutants, split stats children, and the clean, forced-fail, listing and
+warm-up runs beside them), and on pytest's shared default root two that finish together
+can crash in its cleanup (``FileNotFoundError`` unlinking a dead ``pytest-current``); the
+crash becomes a false kill under ``fork`` or a false timeout under ``forkserver``. The
+launcher makes one ``mutineer-pytest-*`` dir in the system temp dir (never under
+``mutants/``, which pytest collects from) and wraps ``PytestRunner.execute_pytest`` to add a
+plugin whose ``tryfirst`` ``pytest_configure`` sets an unset ``--basetemp`` to a new dir
+under it, in the process that calls ``pytest.main``. A ``--basetemp`` the project sets (in
+``pytest_add_cli_args``, ``addopts`` or ``PYTEST_ADDOPTS``) is kept, shared or not. The
+launcher removes its dir when ``run`` ends, also on failure, only in its own process.
+
 The two ``mutineer-*`` commands print one ``MARKER`` line holding JSON:
 
 - ``mutineer-config``: the resolved config fields the engine needs, and mutmut's version;
@@ -46,7 +58,8 @@ Private mutmut names used: ``mutmut.configuration._load_config``, ``._config``,
 ``duration_by_test`` (read); ``ForkServerRunner.collect_stats`` (replaced), its
 ``.list_all_tests``, ``.max_workers``, ``.test_runner_class`` and ``.test_runner_args``,
 ``PytestRunner.run_stats``, ``mutmut.models.results.StatsResult``, and ``state()``'s
-``function_dependencies`` and ``stats_time`` (merged). Exit codes
+``function_dependencies`` and ``stats_time`` (merged);
+``mutmut.runners.harness.PytestRunner.execute_pytest`` (replaced). Exit codes
 ``EXIT_VERSION`` and ``EXIT_CONFIG`` mean mutmut is out of range or has no usable
 ``source_paths``; the reason is on stderr.
 """
@@ -55,7 +68,10 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
+import shutil
 import sys
+import tempfile
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -179,13 +195,25 @@ def main(argv: list[str]) -> None:
             sys.stdout.flush()
         return
 
-    if command == "run":
-        fork_clean_checked = FORK_CLEAN_CHECKED in args
-        args = [a for a in args if a != FORK_CLEAN_CHECKED]
-        _scope_baseline_runs(fork_clean_checked=fork_clean_checked)
-        _split_stats_run()
+    if command != "run":
+        sys.argv = ["mutmut", command, *args]
+        cli()
+        return
+    fork_clean_checked = FORK_CLEAN_CHECKED in args
+    args = [a for a in args if a != FORK_CLEAN_CHECKED]
+    _scope_baseline_runs(fork_clean_checked=fork_clean_checked)
+    _split_stats_run()
     sys.argv = ["mutmut", command, *args]
-    cli()
+    temp_root = tempfile.mkdtemp(prefix="mutineer-pytest-")
+    owner = os.getpid()
+    try:
+        _own_basetemp(temp_root)
+        cli()
+    finally:
+        # forked children leave through os._exit; one that escaped with an exception must
+        # not remove the dir its siblings still use
+        if os.getpid() == owner:
+            shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def _scope_baseline_runs(*, fork_clean_checked: bool) -> None:
@@ -255,6 +283,35 @@ def _scope_baseline_runs(*, fork_clean_checked: bool) -> None:
     isolation.ForkRunner.run_clean_tests = (  # type: ignore[method-assign]
         skipped if fork_clean_checked else fork_clean
     )
+
+
+def _own_basetemp(root: str) -> None:
+    """Give every pytest session mutmut starts its own basetemp, made under ``root``.
+
+    mutmut starts every session through ``PytestRunner.execute_pytest``; the replacement
+    adds a plugin to ``pytest.main``'s ``plugins`` (keeping the caller's) whose
+    ``pytest_configure``, marked ``tryfirst`` so it runs before pytest's ``tmpdir`` plugin
+    reads the option, fills an unset ``--basetemp`` with a new dir. It runs in the process
+    that calls ``pytest.main``, so each forked child gets its own dir. A ``--basetemp`` the
+    project sets is left alone.
+    """
+    from mutmut.runners.harness import PytestRunner
+
+    original = PytestRunner.execute_pytest
+
+    def execute_pytest(self: Any, params: list[str], **kwargs: Any) -> int:
+        import pytest  # here, not above: under forkserver the launcher never imports pytest
+
+        class OwnBasetemp:
+            @pytest.hookimpl(tryfirst=True)
+            def pytest_configure(self, config: Any) -> None:
+                if config.option.basetemp is None:
+                    config.option.basetemp = tempfile.mkdtemp(dir=root)
+
+        kwargs["plugins"] = [*(kwargs.get("plugins") or []), OwnBasetemp()]
+        return int(original(self, params, **kwargs))
+
+    PytestRunner.execute_pytest = execute_pytest  # type: ignore[method-assign]
 
 
 def _split_stats_run() -> None:
