@@ -13,15 +13,17 @@ on, verified against mutmut 3.8.1. When upgrading mutmut, check each one again: 
   `mutmut.configuration._load_config` and `._config`;
   `mutmut.mutation.file_mutation.mutate_file_contents` (predicting mutated functions);
   `run_clean_tests` on `mutmut.workers.isolation.ForkServerRunner` and `.ForkRunner`,
-  `mutmut.__main__.tests_for_mutant_names` and
-  `mutmut.runners.harness.PytestRunner.run_forced_fail` (replaced), `PytestRunner.run_tests`
-  (called) and `mutmut.state.state()` with its `tests_by_mangled_function_name` and
-  `duration_by_test` (read), to scope the clean and forced-fail runs (see "Failures and exit
-  codes"); `ForkServerRunner.collect_stats` (replaced), its `.list_all_tests` (called),
-  `.max_workers`, `.test_runner_class` and `.test_runner_args` (read),
-  `PytestRunner.run_stats` (called), `mutmut.models.results.StatsResult` and `state()`'s
-  `function_dependencies` and `stats_time` (merged), to split the stats run under
-  `forkserver` (see "The cache"); `mutmut.runners.harness.PytestRunner.execute_pytest`
+  `ForkRunner.run_forced_fail`, `mutmut.__main__.tests_for_mutant_names` and
+  `mutmut.runners.harness.PytestRunner.run_forced_fail` (replaced), `PytestRunner.run_tests`,
+  `mutmut.workers.isolation.run_in_fork` (called), `ForkRunner.test_runner` and
+  `mutmut.state.state()` with its `tests_by_mangled_function_name` and `duration_by_test`
+  (read), to skip the clean run and scope the forced-fail run (see "Failures and exit
+  codes"); `collect_stats` on `ForkServerRunner` and `ForkRunner` (replaced), their
+  `.list_all_tests` (called) and `.max_workers`, `ForkServerRunner.test_runner_class` and
+  `.test_runner_args` (read), `mutmut.runners.harness.CollectTestsFailedException`
+  (caught), `PytestRunner.run_stats` (called), `mutmut.models.results.StatsResult` and
+  `state()`'s `function_dependencies` and `stats_time` (merged), to split the stats run
+  (see "The cache"); `mutmut.runners.harness.PytestRunner.execute_pytest`
   (replaced), to give every pytest session its own basetemp (see "Temp dirs").
 - **Scope to files** with `only_mutate`. An empty `only_mutate` means every file matches, so
   never pass it empty.
@@ -104,14 +106,15 @@ structure, so the engine asks mutmut's own generator (`mutate_file_contents`, vi
 
 Because of 3 to 5 the engine deletes `mutants/` at the start of every `run` and `rerun`.
 Because of 1 and 2 little of the cache would be reused anyway. The cost is one stats
-collection, about one run of the test suite. Under `forkserver` the launcher splits it: it
-lists the selected tests in a child, sorts them and deals them round-robin over
-`min(max_children, 4, tests)` concurrent children, each a stats run of its own whose results
-are merged as mutmut merges its single child's (with every caller kept in
-`function_dependencies`). More than 4 children bought nothing on Mutineer's own suite, and
-round-robin was balanced where splitting by file was not. Under `fork` it is never split:
-stats runs in the process the mutants fork from, and the clean run relies on that (see
-"Failures and exit codes").
+collection, about one run of the test suite. The launcher splits it: it lists the selected
+tests, sorts them and deals them round-robin over `min(max_children, 4, tests)` concurrent
+children, each a stats run of its own whose results are merged as mutmut merges its single
+child's (with every caller kept in `function_dependencies`). More than 4 children bought
+nothing on Mutineer's own suite, and round-robin was balanced where splitting by file was
+not. Under `forkserver` the listing runs in a child, and one chunk is mutmut's own run.
+Under `fork` (mutmut's default) the listing runs in the launcher, as mutmut's does, and
+even one chunk runs in a forked child: every mutant forks from the launcher, so no test may
+run there (see "Failures and exit codes").
 
 ## Failures and exit codes
 
@@ -119,46 +122,42 @@ stats runs in the process the mutants fork from, and the clean run relies on tha
 - **A failing baseline** exits 1. All of these are BLOCK:
   - `Failed to collect list of tests`: pytest can't collect the suite;
   - `failed to collect stats`: a test fails in the stats run, which always runs, because the
-    engine deletes `mutants/` and `mutmut-stats.json` before each pass; under `forkserver`
-    also a collection error while listing the tests for the split stats run;
-  - `Failed to run clean test`: a test covering a requested function passed the stats run
-    but fails a second run in the same process (under `fork` only, see below).
+    engine deletes `mutants/` and `mutmut-stats.json` before each pass; also a collection
+    error while listing the tests for the split stats run. The failing children's pytest
+    output is shown under `fork`; under `forkserver` it stays in the child.
 - **The clean-test and forced-fail runs** come after stats. mutmut picks their tests by
   fnmatching the requested names against its test map, whose keys (`pkg.mod.x_f`) never
   contain `__mutmut_`, so with Mutineer's per-function globs it finds none and runs the whole
-  selection. The launcher replaces that lookup: both runs use only the tests covering the
-  requested functions (the union of their test map entries, fastest first), and both are
-  skipped when that union is empty, because every requested mutant is then `no_tests` and
-  none runs.
+  selection. The launcher replaces that lookup: the forced-fail run uses only the tests
+  covering the requested functions (the union of their test map entries, fastest first),
+  and is skipped when that union is empty, because every requested mutant is then
+  `no_tests` and none runs.
 - **The forced-fail run** sets `MUTANT_UNDER_TEST=fail`, so every trampoline raises, and
   mutmut only checks that the run fails. The fastest covering test reaches a requested
   function, so it usually fails at once. If every covering test swallows the exception
   (`except Exception`), the launcher falls back to mutmut's own unscoped run, which fails
-  with `FAILED: Unable to force test failures` only where it did before.
-- **The clean run** only checks an exit code. The launcher skips it where it can't fail
-  differently from the stats run:
-  - under `forkserver`, always: stats and clean each run in a fresh child, so the clean run
-    passes whenever stats did;
-  - under `fork` (mutmut's default), only in `run`'s rule pass: `fork` runs stats in the
-    parent and forks every mutant from it, so a test that passes only once per process
-    would report false kills; the clean run catches that. A mutant runs only its own
-    function's covering tests, so running their union a second time in the parent covers
-    every test any mutant will run; a can't-run-twice test that covers no requested
-    function no longer blocks, because no mutant runs it. The rule pass runs a subset of
-    tests the all-tests pass already checked; `recheck` has no earlier pass, so it keeps it
-    (scoped to the rule tests covering the requested functions).
-  - Not caught: a test whose second-run result depends on which tests ran before it in
-    the same process. A mutant runs its own subset in a different order from the clean run
-    (and the rule pass a different order from the all-tests pass); the old full-suite clean
-    run had the same gap.
-- **A split stats run** (under `forkserver`) runs each test once, but with different
-  neighbours and in a different order than one session, and session-scoped fixtures run
-  once per chunk. A test that passes only after (or only without) certain others can now
-  fail the stats run or start passing; mutants already run per-function subsets in their own
+  with `FAILED: Unable to force test failures` only where it did before. Under `fork` it runs
+  in a forked child, as under `forkserver`: a test it ran in the launcher would run a second
+  time in every mutant's process.
+- **The clean run** only checks an exit code, and the launcher always skips it: stats, the
+  forced fail and every mutant each run in a fresh child, under `fork` forked from a
+  launcher that never ran a test, so the clean run passes whenever stats did. A test that
+  passes only once per process sees what a fresh process sees in every mutant, as under
+  `forkserver`; mutmut's own `fork` path ran stats in the launcher, where such a test failed
+  the second time (a false kill, or `Failed to run clean test`).
+- **A split stats run** runs each test once, but with different neighbours and in a
+  different order than one session, and session-scoped fixtures run once per chunk. A test
+  that passes only after (or only without) certain others can now fail the stats run or
+  start passing; mutants already run per-function subsets in their own
   order, so such a suite was already unreliable. A mutated function called at import time
   is recorded against the first test of each chunk instead of the first of the session
   (mutmut clears its hit list per test), so it can map to up to 4 tests instead of one.
   Durations measured under concurrency can be longer; they only lengthen mutant timeouts.
+  Test pollution (a test that passes only after another ran first in the same process) is
+  not supported. Under `fork`, when the two tests land in different stats children the stats
+  run fails, a BLOCK, and the launcher prints a line naming test pollution as the likely
+  cause; when they land in the same child the stats run passes and that test's mutants can
+  be killed falsely, with no warning.
 - **No test for any requested function:** exit 1, `Stopping early, because we could not find
   any test case`, and no results written.
 - **Tests hit no mutant's module path:** `Stopping early, because tests recorded trampoline
@@ -169,8 +168,8 @@ stats runs in the process the mutants fork from, and the clean run relies on tha
 ## Temp dirs
 
 mutmut runs several pytest sessions at once: the mutants (`max_children` forked children),
-and alongside them the stats run (split into children under `forkserver`), the clean and
-forced-fail runs, the test listing and the forkserver warm-up. By default every one of them
+and alongside them the stats run (split into children), the forced-fail run, the test
+listing and the forkserver warm-up. By default every one of them
 uses pytest's shared temp root, `$TMPDIR/pytest-of-<user>/`: each session makes a numbered
 `pytest-<n>` there, re-points `pytest-current` at it and, when it finishes, removes old
 numbered dirs and dead symlinks. Two sessions that finish together can both try to unlink

@@ -220,15 +220,14 @@ def clean_runs(seen: list[str]) -> int:
     return count
 
 
-@pytest.mark.parametrize(("isolation", "expected"), [("fork", 1), ("forkserver", 0)])
-def test_clean_test_run_only_where_it_checks_something(
+@pytest.mark.parametrize("isolation", ["fork", "forkserver"])
+def test_no_clean_test_run(
     shop_copy: Any,
     engine: MutmutEngine,
     ship_rule_map: RuleMap,
     diff_of: DiffOf,
     tmp_path: Path,
     isolation: str,
-    expected: int,
 ) -> None:
     shop_copy.checkout("agent-gap")
     root = shop_copy.path
@@ -242,8 +241,8 @@ def test_clean_test_run_only_where_it_checks_something(
     assert len(survivors(run, "rule")) == 4  # the rule pass ran, results unchanged
     seen = sessions(log)
     assert stats_runs(seen) == 2  # the logger sees both passes
-    # under fork: the all-tests pass only; the rule pass runs a subset of the same tests
-    assert clean_runs(seen) == expected
+    # no test runs where the mutants start from, so a clean run checks nothing
+    assert clean_runs(seen) == 0
 
     names = [r.name for r in by_run(run, "rule") if r.status == S]
     again = engine.rerun(names, ship_rule_map, root)
@@ -251,7 +250,7 @@ def test_clean_test_run_only_where_it_checks_something(
     assert {r.status for r in again.results} == {S}
     seen = sessions(log)
     assert stats_runs(seen) == 1
-    assert clean_runs(seen) == expected  # recheck has no earlier pass to rely on
+    assert clean_runs(seen) == 0
 
 
 TEST_LOGGER = """
@@ -314,13 +313,8 @@ def test_clean_and_forced_fail_runs_use_only_covering_tests(
     rule_covering = {t for t in covering if ship_rule_map.get(t)}
     assert rule_covering
 
-    clean = started(all_pass, "")
-    if isolation == "fork":
-        assert set(clean) == covering
-        assert len(covering) < len(set(started(all_pass, "stats")))
-    else:
-        assert clean == []
-    assert started(rule_pass, "") == []
+    assert len(covering) < len(set(started(all_pass, "stats")))
+    assert started(all_pass, "") == started(rule_pass, "") == []
     for run_starts, tests in ((all_pass, covering), (rule_pass, rule_covering)):
         forced = started(run_starts, "fail")
         assert len(forced) == 1 and forced[0] in tests
@@ -330,8 +324,7 @@ def test_clean_and_forced_fail_runs_use_only_covering_tests(
     assert not again.baseline_failed
     assert {r.status for r in again.results} == {S}
     (rerun_starts,) = logged_runs(log)
-    clean = started(rerun_starts, "")
-    assert set(clean) == (rule_covering if isolation == "fork" else set())
+    assert started(rerun_starts, "") == []
     forced = started(rerun_starts, "fail")
     assert len(forced) == 1 and forced[0] in rule_covering
 
@@ -428,9 +421,13 @@ def test_b():
 """
 
 
-@pytest.mark.parametrize("isolation", ["fork", "forkserver"])
+# under fork one child still runs stats in a child: the process the mutants fork from
+# must never run test_b, in stats or in the forced fail
+@pytest.mark.parametrize(
+    ("isolation", "children"), [("fork", None), ("fork", 1), ("forkserver", None)]
+)
 def test_suite_that_passes_only_once_per_process(
-    git_repo: Any, engine: MutmutEngine, diff_of: DiffOf, isolation: str
+    git_repo: Any, diff_of: DiffOf, isolation: str, children: int | None
 ) -> None:
     root = git_repo.path
     git_repo.write(
@@ -445,29 +442,61 @@ def test_suite_that_passes_only_once_per_process(
     git_repo.commit("base")
     git_repo.write("src/pkg/m.py", TWICE_MODULE)
     rule_map: RuleMap = {"tests/test_m.py::test_b": ["R-1"]}
+    engine = MutmutEngine(max_children=children)
 
+    # every mutant's tests see a fresh process, where test_b passes
     run = engine.run(diff_of(root), rule_map, root)
-    f_names = ["pkg.m.x_f__mutmut_1"]
-    if isolation == "fork":
-        # mutants fork from the process that ran stats, where test_b can't pass again
-        assert run.baseline_failed
-        assert run.results == []
-    else:
-        assert not run.baseline_failed
-        status = {(r.run, r.function, r.status) for r in run.results}
-        assert status == {
-            ("all", "pkg.m.x_f", S),
-            ("all", "pkg.m.x_g", K),
-            ("rule", "pkg.m.x_f", S),
-        }
-        f_names = [r.name for r in by_run(run, "rule")]
+    assert not run.baseline_failed
+    status = {(r.run, r.function, r.status) for r in run.results}
+    assert status == {
+        ("all", "pkg.m.x_f", S),
+        ("all", "pkg.m.x_g", K),
+        ("rule", "pkg.m.x_f", S),
+    }
 
-    again = engine.rerun(f_names, rule_map, root)
-    if isolation == "fork":
-        assert again.baseline_failed
-    else:
-        assert not again.baseline_failed
-        assert {r.status for r in again.results} == {S}
+    again = engine.rerun([r.name for r in by_run(run, "rule")], rule_map, root)
+    assert not again.baseline_failed
+    assert {r.status for r in again.results} == {S}
+
+
+POLLUTED_TESTS = """\
+import helper
+from pkg.m import f, g
+
+
+def test_a():
+    helper.STATE["ready"] = True
+    assert g(2) == 4
+
+
+def test_b():
+    assert helper.STATE.get("ready")  # passes only after test_a, in the same process
+    f(1)
+"""
+
+
+def test_test_pollution_split_over_stats_children_blocks_under_fork(
+    git_repo: Any, diff_of: DiffOf
+) -> None:
+    root = git_repo.path
+    git_repo.write(
+        "pyproject.toml",
+        '[tool.mutmut]\nsource_paths = ["src/pkg"]\nprocess_isolation = "fork"\n\n'
+        '[tool.pytest.ini_options]\npythonpath = ["src"]\n',
+    )
+    git_repo.write("src/pkg/__init__.py", "")
+    git_repo.write("tests/helper.py", "STATE = {}\n")
+    git_repo.write("tests/test_m.py", POLLUTED_TESTS)
+    git_repo.write(".gitignore", "mutants/\n")
+    git_repo.commit("base")
+    git_repo.write("src/pkg/m.py", TWICE_MODULE)
+
+    # two children: test_a and test_b run in different processes
+    run = MutmutEngine(max_children=2).run(diff_of(root), {}, root)
+    assert run.baseline_failed
+    assert run.results == []
+    assert run.baseline_output and "test pollution" in run.baseline_output
+    assert "test_b" in run.baseline_output  # the failing child's pytest output
 
 
 # ---- mutmut's stats run ----
@@ -522,12 +551,13 @@ def statuses(run: EngineRun) -> dict[tuple[str, str], MutantStatus]:
     return {(r.run, r.name): r.status for r in run.results}
 
 
-def test_stats_run_split_over_children_under_forkserver(
-    shop_copy: Any, ship_rule_map: RuleMap, diff_of: DiffOf, tmp_path: Path
+@pytest.mark.parametrize("isolation", ["fork", "forkserver"])
+def test_stats_run_split_over_children(
+    shop_copy: Any, ship_rule_map: RuleMap, diff_of: DiffOf, tmp_path: Path, isolation: str
 ) -> None:
     shop_copy.checkout("agent-gap")
     root = shop_copy.path
-    set_isolation(root, "forkserver")
+    set_isolation(root, isolation)
     log = tmp_path / "pids.log"
     add_pid_logger(root, log)
     suite = collected_suite(root)
@@ -536,7 +566,7 @@ def test_stats_run_split_over_children_under_forkserver(
     single = one.run(diff_of(root), ship_rule_map, root)
     assert not single.baseline_failed
     single_all, single_rule = stats_by_pid(log)
-    assert len(single_all) == len(single_rule) == 1  # max_children 1: mutmut's own stats run
+    assert len(single_all) == len(single_rule) == 1  # max_children 1: one stats process
     assert sorted(*single_all.values()) == suite
 
     split = two.run(diff_of(root), ship_rule_map, root)
@@ -559,22 +589,6 @@ def test_stats_run_split_over_children_under_forkserver(
     assert not split_again.baseline_failed
     assert statuses(split_again) == statuses(single_again)
     assert {r.status for r in split_again.results} == {S}
-
-
-def test_stats_run_not_split_under_fork(
-    shop_copy: Any, ship_rule_map: RuleMap, diff_of: DiffOf, tmp_path: Path
-) -> None:
-    shop_copy.checkout("agent-gap")
-    root = shop_copy.path
-    set_isolation(root, "fork")
-    log = tmp_path / "pids.log"
-    add_pid_logger(root, log)
-
-    run = MutmutEngine(max_children=2).run(diff_of(root), ship_rule_map, root)
-    assert not run.baseline_failed
-    passes = stats_by_pid(log)
-    assert len(passes) == 2  # both passes ran
-    assert [len(by_pid) for by_pid in passes] == [1, 1]
 
 
 STATS_ONLY_COLLECTION_ERROR = """\

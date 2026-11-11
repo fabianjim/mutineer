@@ -2,7 +2,7 @@
 
 Usage (always with the project root as the working directory)::
 
-    python -m mutineer.engine._launch '<json overrides>' run [FLAG] 'pkg.mod.x_f__mutmut_*' ...
+    python -m mutineer.engine._launch '<json overrides>' run 'pkg.mod.x_f__mutmut_*' ...
     python -m mutineer.engine._launch '<json overrides>' show NAME [NAME ...]
     python -m mutineer.engine._launch '<json overrides>' mutineer-config
     python -m mutineer.engine._launch '<json overrides>' mutineer-functions FILE [FILE ...]
@@ -12,28 +12,31 @@ config dataclass with ``dataclasses.replace`` before ``mutmut.__main__`` is impo
 user's ``pyproject.toml`` is never edited. ``show`` accepts
 several names and prints a ``RECORD_SEP`` + name line before each mutant's output.
 
-``run`` scopes mutmut's clean-test and forced-fail runs to the tests that cover the
-requested functions (mutmut's own lookup never matches the per-function globs, so it runs
-the whole selection), and skips both when there are none: no mutant would run. The forced
-fail starts with the fastest covering test; if the covering tests don't fail, it falls back
-to mutmut's unscoped run. The clean run only checks an exit code. Under ``forkserver`` it
-always passes when stats did (each runs in a fresh child), so it is always skipped. Under
-``fork`` mutants fork from the process that ran stats and the clean run checks that the
-tests the mutants will run pass a second time there, so it is kept unless ``FLAG`` is
-``--fork-clean-checked``: the launcher's own flag, meaning an earlier pass already checked
-these tests. It is removed before mutmut parses its argv.
+``run`` scopes mutmut's forced-fail run to the tests that cover the requested functions
+(mutmut's own lookup never matches the per-function globs, so it runs the whole selection),
+and skips it when there are none: no mutant would run. It starts with the fastest covering
+test; if the covering tests don't fail, it falls back to mutmut's unscoped run. Under
+``fork`` it runs in a forked child, as under ``forkserver``. mutmut's clean-test run is
+always skipped: it only checks an exit code, and it always passes when stats did, because
+no test ever runs in the process the mutants start from.
 
-``run`` also splits mutmut's full stats run under ``forkserver``: the selected tests are
-listed in a child, sorted and dealt round-robin into ``min(max_children, STATS_CHILDREN,
-tests)`` chunks, each a stats run in its own concurrent child, merged as mutmut merges its
-single child's result. With one chunk or fewer it is mutmut's own run. A collection error in
-the listing makes the stats run fail, as one in the stats run itself does. Under ``fork``
-stats runs in the launcher process, the one every mutant forks from, and the clean run checks
-that the tests pass a second time there, so moving stats into children would break it.
+``run`` also splits mutmut's full stats run: the selected tests are listed (in a child under
+``forkserver``, in the launcher under ``fork``, as mutmut does), sorted and dealt round-robin
+into ``min(max_children, STATS_CHILDREN, tests)`` chunks, each a stats run in its own
+concurrent child, merged as mutmut merges its single child's result. A collection error in
+the listing makes the stats run fail, as one in the stats run itself does. Under
+``forkserver``, one chunk or fewer, or an incremental stats run, is mutmut's own run. Under
+``fork`` the stats run always runs in forked children, even as one chunk, so the launcher,
+which every mutant forks from, never runs a test: a test that passes only once per process
+then passes in each mutant, as under ``forkserver``. The children's pytest output is printed
+when one fails, and when a split stats run fails the launcher adds that a test may depend on
+another having run first in the same process (test pollution), which Mutineer doesn't
+support. Two such tests dealt into the same child pass, and their mutants can then be killed
+falsely.
 
 ``run`` gives every pytest session mutmut starts its own basetemp. Sessions run
-concurrently (mutants, split stats children, and the clean, forced-fail, listing and
-warm-up runs beside them), and on pytest's shared default root two that finish together
+concurrently (mutants, split stats children, and the forced-fail, listing and warm-up runs
+beside them), and on pytest's shared default root two that finish together
 can crash in its cleanup (``FileNotFoundError`` unlinking a dead ``pytest-current``); the
 crash becomes a false kill under ``fork`` or a false timeout under ``forkserver``. The
 launcher makes one ``mutineer-pytest-*`` dir in the system temp dir (never under
@@ -52,13 +55,16 @@ The two ``mutineer-*`` commands print one ``MARKER`` line holding JSON:
 Private mutmut names used: ``mutmut.configuration._load_config``, ``._config``,
 ``mutmut.mutation.file_mutation.mutate_file_contents``, ``run_clean_tests`` on
 ``mutmut.workers.isolation.ForkServerRunner`` and ``.ForkRunner`` (replaced),
-``mutmut.__main__.tests_for_mutant_names`` (replaced),
-``mutmut.runners.harness.PytestRunner.run_forced_fail`` (replaced) and ``.run_tests``, and
-``mutmut.state.state()`` with its ``tests_by_mangled_function_name`` and
-``duration_by_test`` (read); ``ForkServerRunner.collect_stats`` (replaced), its
-``.list_all_tests``, ``.max_workers``, ``.test_runner_class`` and ``.test_runner_args``,
-``PytestRunner.run_stats``, ``mutmut.models.results.StatsResult``, and ``state()``'s
-``function_dependencies`` and ``stats_time`` (merged);
+``ForkRunner.run_forced_fail`` (replaced), its ``.test_runner``, and
+``mutmut.workers.isolation.run_in_fork``; ``mutmut.__main__.tests_for_mutant_names``
+(replaced), ``mutmut.runners.harness.PytestRunner.run_forced_fail`` (replaced) and
+``.run_tests``, and ``mutmut.state.state()`` with its ``tests_by_mangled_function_name`` and
+``duration_by_test`` (read); ``collect_stats`` on ``ForkServerRunner`` and ``ForkRunner``
+(replaced), their ``.list_all_tests`` and ``.max_workers``, ``ForkServerRunner``'s
+``.test_runner_class`` and ``.test_runner_args``,
+``mutmut.runners.harness.CollectTestsFailedException``, ``PytestRunner.run_stats``,
+``mutmut.models.results.StatsResult``, and ``state()``'s ``function_dependencies`` and
+``stats_time`` (merged);
 ``mutmut.runners.harness.PytestRunner.execute_pytest`` (replaced). Exit codes
 ``EXIT_VERSION`` and ``EXIT_CONFIG`` mean mutmut is out of range or has no usable
 ``source_paths``; the reason is on stderr.
@@ -72,6 +78,7 @@ import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -83,10 +90,12 @@ RECORD_SEP = "\x1e"
 EXIT_VERSION = 90
 EXIT_CONFIG = 91
 EXIT_USAGE = 92
-FORK_CLEAN_CHECKED = "--fork-clean-checked"
-"""``run`` flag: an earlier pass already ran mutmut's clean-test run for these tests."""
 STATS_CHILDREN = 4
-"""Most concurrent children for mutmut's stats run under ``forkserver``; more bought nothing."""
+"""Most concurrent children for mutmut's stats run; more bought nothing."""
+TEST_POLLUTION = (
+    "mutineer: the stats run was split over processes; a test may depend on another test "
+    "having run first in the same process (test pollution), which Mutineer doesn't support"
+)
 _GLOB_SUFFIX = "__mutmut_*"
 
 
@@ -199,9 +208,7 @@ def main(argv: list[str]) -> None:
         sys.argv = ["mutmut", command, *args]
         cli()
         return
-    fork_clean_checked = FORK_CLEAN_CHECKED in args
-    args = [a for a in args if a != FORK_CLEAN_CHECKED]
-    _scope_baseline_runs(fork_clean_checked=fork_clean_checked)
+    _scope_baseline_runs()
     _split_stats_run()
     sys.argv = ["mutmut", command, *args]
     temp_root = tempfile.mkdtemp(prefix="mutineer-pytest-")
@@ -216,14 +223,14 @@ def main(argv: list[str]) -> None:
             shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def _scope_baseline_runs(*, fork_clean_checked: bool) -> None:
+def _scope_baseline_runs() -> None:
     """Decide what mutmut's clean-test and forced-fail runs do.
 
-    Both use only the covering tests of the requested functions, fastest first, and are
-    skipped when there are none (every requested mutant is then ``no_tests`` and none
-    runs). The clean run is skipped under ``forkserver``, and under ``fork`` when
-    ``fork_clean_checked``. A forced fail that the covering tests don't fail falls back to
-    mutmut's own unscoped one.
+    The clean run is always skipped. The forced fail uses only the covering tests of the
+    requested functions, fastest first, and is skipped when there are none (every requested
+    mutant is then ``no_tests`` and none runs); one that the covering tests don't fail falls
+    back to mutmut's own unscoped one. Under ``fork`` it runs in a forked child, so none of
+    its tests runs in the process the mutants fork from.
     """
     import fnmatch
 
@@ -234,7 +241,6 @@ def _scope_baseline_runs(*, fork_clean_checked: bool) -> None:
 
     original_tests_for = mutmut_main.tests_for_mutant_names
     original_forced_fail = PytestRunner.run_forced_fail
-    original_fork_clean = isolation.ForkRunner.run_clean_tests
     # the covering tests, known once mutmut asks for the clean run's tests; None: not scoped
     covering: list[str] | None = None
 
@@ -261,11 +267,6 @@ def _scope_baseline_runs(*, fork_clean_checked: bool) -> None:
     def skipped(self: Any, tests: Any) -> int:
         return 0
 
-    def fork_clean(self: Any, tests: Any) -> int:
-        if covering == []:
-            return 0
-        return int(original_fork_clean(self, tests))
-
     def forced_fail(self: Any) -> int:
         if covering is None:
             return int(original_forced_fail(self))
@@ -276,13 +277,15 @@ def _scope_baseline_runs(*, fork_clean_checked: bool) -> None:
             return int(original_forced_fail(self))
         return code
 
+    def fork_forced_fail(self: Any) -> int:
+        return int(isolation.run_in_fork(self.test_runner.run_forced_fail))
+
     # a list, not a set: pytest runs the tests in this order
     mutmut_main.tests_for_mutant_names = tests_for_mutant_names  # type: ignore[assignment]
     PytestRunner.run_forced_fail = forced_fail  # type: ignore[method-assign]
     isolation.ForkServerRunner.run_clean_tests = skipped  # type: ignore[method-assign]
-    isolation.ForkRunner.run_clean_tests = (  # type: ignore[method-assign]
-        skipped if fork_clean_checked else fork_clean
-    )
+    isolation.ForkRunner.run_clean_tests = skipped  # type: ignore[method-assign]
+    isolation.ForkRunner.run_forced_fail = fork_forced_fail  # type: ignore[method-assign]
 
 
 def _own_basetemp(root: str) -> None:
@@ -315,15 +318,21 @@ def _own_basetemp(root: str) -> None:
 
 
 def _split_stats_run() -> None:
-    """Under ``forkserver``, split mutmut's full stats run over concurrent children.
+    """Split mutmut's full stats run over concurrent children.
 
-    The selected tests are listed in a child, sorted and dealt round-robin into
-    ``min(max_children, STATS_CHILDREN, tests)`` chunks, each run in its own child; the
-    results are merged as mutmut merges its single child's. With one chunk or fewer, or
-    for an incremental stats run, mutmut's own method runs unchanged. A listing that fails
-    (a collection error) returns a non-zero code, so mutmut reports a failed stats run.
-    ``ForkRunner`` is left alone: it runs stats in the process the mutants fork from.
+    The selected tests are listed, sorted and dealt round-robin into ``min(max_children,
+    STATS_CHILDREN, tests)`` chunks, each run in its own child; the results are merged as
+    mutmut merges its single child's. A listing that fails (a collection error) returns a
+    non-zero code, so mutmut reports a failed stats run.
+
+    Under ``forkserver`` the listing runs in a child, and with one chunk or fewer, or for
+    an incremental stats run, mutmut's own method runs unchanged. Under ``fork`` the
+    listing runs in the launcher, as mutmut's does, and every stats run, even one chunk,
+    runs in a forked child: the launcher is the process every mutant forks from, so no test
+    may run there. A failing child's pytest output is printed, and a failing split run adds
+    a line naming test pollution, the likely cause when the suite passes in one process.
     """
+    from mutmut.runners.harness import CollectTestsFailedException
     from mutmut.workers import isolation
 
     original = isolation.ForkServerRunner.collect_stats
@@ -342,17 +351,42 @@ def _split_stats_run() -> None:
         k = min(self.max_workers, STATS_CHILDREN, len(ids))
         if k <= 1:  # no ids fails in mutmut's own run as it always did
             return int(original(self, tests))
-        return _stats_in_children(self, [ids[i::k] for i in range(k)])
+        return _stats_in_children(
+            lambda: self.test_runner_class(**self.test_runner_args),
+            [ids[i::k] for i in range(k)],
+        )
+
+    def fork_collect_stats(self: Any, tests: Any) -> int:
+        chunks = [list(tests)] if tests else None  # incremental: never for Mutineer
+        if chunks is None:
+            try:
+                ids = sorted(self.list_all_tests().ids)
+            except CollectTestsFailedException:
+                print("mutineer: listing the tests for mutmut's stats run failed")
+                return 1
+            # no ids: one empty chunk, mutmut's own "every test", which fails as it always did
+            k = max(1, min(self.max_workers, STATS_CHILDREN, len(ids)))
+            chunks = [ids[i::k] for i in range(k)]
+        code = _stats_in_children(lambda: self.test_runner, chunks, show_output=True)
+        if code and len(chunks) > 1:
+            print(TEST_POLLUTION)
+        return code
 
     isolation.ForkServerRunner.collect_stats = collect_stats  # type: ignore[method-assign]
+    isolation.ForkRunner.collect_stats = fork_collect_stats  # type: ignore[method-assign]
 
 
-def _stats_in_children(runner: Any, chunks: list[list[str]]) -> int:
+def _stats_in_children(
+    make_runner: Callable[[], Any], chunks: list[list[str]], *, show_output: bool = False
+) -> int:
     """Run mutmut's stats collection on each chunk in its own child, merge into ``state()``.
 
-    Returns 0 only when every child sent a result and every result's exit code is 0.
+    ``make_runner`` gives the test runner, called in the child. With ``show_output``, each
+    child's output is sent back with its result and printed, in chunk order, for the
+    children that failed. Returns 0 only when every child sent a result and every result's
+    exit code is 0.
     """
-    import os
+    import io
     import pickle
     import signal
     import traceback
@@ -361,8 +395,14 @@ def _stats_in_children(runner: Any, chunks: list[list[str]]) -> int:
     from mutmut.state import state
 
     def run_chunk(chunk: list[str]) -> bytes:
-        child_runner = runner.test_runner_class(**runner.test_runner_args)
-        exit_code = child_runner.run_stats(tests=chunk)
+        streams = sys.stdout, sys.stderr
+        captured = io.StringIO()
+        if show_output:
+            sys.stdout = sys.stderr = captured
+        try:
+            exit_code = make_runner().run_stats(tests=chunk)
+        finally:
+            sys.stdout, sys.stderr = streams
         result = StatsResult(
             exit_code=exit_code,
             tests_by_mangled_function_name=dict(state().tests_by_mangled_function_name),
@@ -370,8 +410,9 @@ def _stats_in_children(runner: Any, chunks: list[list[str]]) -> int:
             stats_time=state().stats_time or 0.0,
             function_dependencies=dict(state().function_dependencies),
         )
-        return pickle.dumps(result.to_dict())
+        return pickle.dumps({"result": result.to_dict(), "output": captured.getvalue()})
 
+    pids: list[int] = []  # in chunk order
     readers: dict[int, int] = {}  # pid -> read end of its pipe, until read
     running: set[int] = set()  # pids not reaped yet
     payloads: dict[int, bytes] = {}
@@ -391,6 +432,7 @@ def _stats_in_children(runner: Any, chunks: list[list[str]]) -> int:
                     os._exit(1)
                 os._exit(0)
             os.close(write_fd)
+            pids.append(pid)
             readers[pid] = read_fd
             running.add(pid)
         # read every pipe to the end before waiting: a child blocks on a full pipe
@@ -410,14 +452,18 @@ def _stats_in_children(runner: Any, chunks: list[list[str]]) -> int:
             os.waitpid(pid, 0)
 
     failed = 0
-    for pid, code in codes.items():
+    for pid in pids:
+        code = codes[pid]
         try:
-            result = StatsResult.from_dict(pickle.loads(payloads[pid])) if code == 0 else None
+            sent: dict[str, Any] | None = pickle.loads(payloads[pid]) if code == 0 else None
+            result = StatsResult.from_dict(sent["result"]) if sent else None
         except Exception:  # an empty or cut-off payload
             result = None
         if result is None:
             failed = failed or code or 1
             continue
+        if show_output and result.exit_code and sent and sent["output"]:
+            print(sent["output"], end="")
         for key, of_key in result.tests_by_mangled_function_name.items():
             state().tests_by_mangled_function_name[key] |= of_key
         state().duration_by_test.update(result.duration_by_test)

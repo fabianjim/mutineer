@@ -198,13 +198,8 @@ class MutmutEngine:
         baseline_failed, baseline_output = False, None
         if rule_covered:
             rule_files = sorted({f.file for f in rule_covered})
-            # the all-tests pass already ran mutmut's clean-test run on these tests
             rule_pass = self._mutmut_run(
-                root,
-                rule_files,
-                rule_covered,
-                [*cfg.pytest_add_cli_args, *RULE_PASS_ARGS],
-                fork_clean_checked=True,
+                root, rule_files, rule_covered, [*cfg.pytest_add_cli_args, *RULE_PASS_ARGS]
             )
             if rule_pass.kind == "baseline_failed":
                 baseline_failed, baseline_output = True, rule_pass.output
@@ -366,14 +361,8 @@ class MutmutEngine:
         files: list[str],
         functions: list[FunctionRef],
         pytest_args: list[str],
-        *,
-        fork_clean_checked: bool = False,
     ) -> _Pass:
-        """One ``mutmut run`` over ``functions``, read immediately.
-
-        ``fork_clean_checked``: an earlier pass in this call already ran mutmut's clean-test
-        run on these tests, so the launcher may skip it under ``fork`` too.
-        """
+        """One ``mutmut run`` over ``functions``, read immediately."""
         assert files and functions, "never call mutmut with an empty scope"
         stats = root / "mutants" / "mutmut-stats.json"
         if stats.is_file():
@@ -383,8 +372,6 @@ class MutmutEngine:
             "pytest_add_cli_args": pytest_args,
         }
         args = ["run"]
-        if fork_clean_checked:
-            args.append(_launch.FORK_CLEAN_CHECKED)
         if self.max_children:
             args += ["--max-children", str(self.max_children)]
         args += [glob_escape(f.mutmut_name) + "__mutmut_*" for f in functions]

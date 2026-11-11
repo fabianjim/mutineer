@@ -74,14 +74,13 @@ nothing. Invariants and the reasons for them:
     which resets the cache anyway, and mutants requested by name always rerun;
   - read `.meta` exit codes and `mutmut-stats.json` right after each pass (the next pass
     overwrites them), only for the names requested; never use `mutmut results`;
-  - run mutmut's clean-test and forced-fail runs on the requested functions' covering tests
-    only, and skip both when there are none; also skip the clean run under `forkserver`
-    and in `run`'s rule pass under `fork`: `fork` forks mutants from the process that ran
-    stats and they run only their covering tests, so a second clean pass of those there is
-    what catches a test that passes only once per process;
-  - under `forkserver`, split the stats run round-robin over `min(max_children, 4, tests)`
-    children; never under `fork`, because there stats runs in the process the mutants fork
-    from, and the clean run relies on that;
+  - run mutmut's forced-fail run on the requested functions' covering tests only, and skip
+    it when there are none; always skip the clean run: it passes whenever stats did,
+    because no test runs in the process the mutants start from;
+  - split the stats run round-robin over `min(max_children, 4, tests)` children; under
+    `fork` run even one chunk, and the forced fail, in a forked child, because every mutant
+    forks from the launcher and a test run there would run a second time in each mutant.
+    A split can fail a suite with test pollution, which Mutineer doesn't support;
   - give every pytest session mutmut starts its own basetemp, unless the project sets one:
     sessions sharing pytest's default temp root crash in its cleanup when they finish
     together, and the crash becomes a false kill or timeout;
