@@ -6,6 +6,8 @@ from pathlib import Path
 
 import typer
 
+from mutineer import agent_config
+from mutineer.cli.hook import Agent
 from mutineer.config import load_config
 
 RULES_TEMPLATE = """\
@@ -51,8 +53,18 @@ _GITIGNORE_ENTRIES: dict[str, set[str]] = {
 }
 
 
-def init() -> int:
-    """Write a rules.toml template and .gitignore entries. Never overwrites."""
+def init(
+    agents: list[Agent] = typer.Option(
+        [],
+        "--agent",
+        help="Also install Mutineer's skill and Stop hook for this agent. Repeatable.",
+    ),
+) -> int:
+    """Write a rules.toml template and .gitignore entries. Never overwrites.
+
+    With ``--agent``, also install the skill and merge the Stop hook into the agent's
+    project config. Exits 4 when a config file couldn't be merged (left unchanged).
+    """
     root = Path.cwd()
     config = load_config(root)
 
@@ -75,5 +87,13 @@ def init() -> int:
         typer.echo(f"Added {', '.join(missing)} to .gitignore.")
     else:
         typer.echo(".gitignore already has Mutineer's entries.")
+
+    failed = False
+    for agent in dict.fromkeys(agents):
+        for step in agent_config.install(root, agent.value):
+            typer.echo(step.message, err=step.failed)
+            failed = failed or step.failed
+        if agent is Agent.CODEX:
+            typer.echo(agent_config.CODEX_TRUST_NOTE)
     typer.echo(NEXT_STEP)
-    return 0
+    return 4 if failed else 0

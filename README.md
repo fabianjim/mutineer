@@ -36,6 +36,28 @@ mutineer init
 `init` writes a commented `.mutineer/rules.toml` and adds `mutants/` and
 `.mutineer/last-run.json` to `.gitignore`. It never overwrites anything.
 
+To let a coding agent use Mutineer on its own, name the agent (repeatable):
+
+```console
+mutineer init --agent claude     # Claude Code
+mutineer init --agent codex      # Codex
+```
+
+This also writes Mutineer's skill, which teaches the agent the loop below, and its Stop
+hook (see [The Stop hook](#the-stop-hook)):
+
+| Agent | Skill | Stop hook merged into |
+|---|---|---|
+| `claude` | `.claude/skills/mutineer/SKILL.md` | `.claude/settings.json` |
+| `codex` | `.agents/skills/mutineer/SKILL.md` | `.codex/hooks.json`, or `.codex/config.toml` when it already has a `hooks` table |
+
+Other settings and hooks in those files are kept, a hook that already runs
+`mutineer hook stop` isn't added twice, and a file that can't be merged is left unchanged
+with the snippet to add by hand (exit 4). A SKILL.md that differs from your Mutineer
+version is left alone; delete it and rerun `init --agent` to update it. In a project with
+`uv.lock` the hook runs `uv run --no-sync mutineer`. Commit these files so every checkout
+gets them.
+
 mutmut needs to know where your code is. In `pyproject.toml`:
 
 ```toml
@@ -108,6 +130,7 @@ mutineer run                     # judge the diff from the merge-base to the wor
 mutineer run --format agent      # compact JSON for the implementing agent
 mutineer recheck --format agent  # after the agent adds tests: rerun only its survivors
 mutineer fresh                   # would `run` reuse the last verdict? exit 0 yes, 1 no
+mutineer hook stop --agent claude|codex  # the Stop hook; `init --agent` installs it
 mutineer dispute ID "<why>"      # agent: a survivor_rule no caller can observe
 mutineer resolve ID... --confirm # human: agree (or --reject --reason TEXT)
 mutineer rules check             # validate rules.toml and list each rule's tests
@@ -202,6 +225,27 @@ reject; a rejected one goes back to the agent.
 `recheck` exits 4 if there's no previous run, or if the merge-base moved since then; run
 `mutineer run` again in that case.
 
+### The Stop hook
+
+With `init --agent`, the agent's harness runs `mutineer hook stop` each time the agent
+tries to finish a turn. The hook runs `mutineer run` and:
+
+- **sends the agent back** when the agent report has a `next_command`: an undisputed
+  `survivor_rule`, or a test suite that fails on its own. The reason the agent sees is the
+  `--format agent` report.
+- **lets the agent stop** otherwise, with a one-line message for you: a pass, findings for
+  a human only (including a tamper block), the `recheck` round cap, or Mutineer failing
+  to run. It never sends the agent back twice in a row (`stop_hook_active`), and when
+  nothing changed since the last verdict it lets the agent stop without running, in well
+  under a second.
+
+It always exits 0 and prints one JSON object, so it can't trap the agent. The hook's
+`timeout` is 600 s; raise it in the agent's config if a full `mutineer run` on your
+project takes longer.
+
+Codex loads project hooks only when the project's `.codex/` layer is trusted, and asks
+you to review a new hook once (`/hooks`).
+
 ### Exit codes
 
 | Code | Meaning |
@@ -218,9 +262,10 @@ reject; a rejected one goes back to the agent.
 `.mutineer/last-run.json` (the state `recheck` and reuse read), unless you pass
 `--output`. `fresh` writes nothing.
 `rules propose`, `reject` and `dismiss`, `dispute` and `resolve` write only in
-`.mutineer/`. Only the commands you
-run yourself write elsewhere: `init` (`.gitignore`) and `rules accept` (the rules file and
-rule markers in tests).
+`.mutineer/`, and `hook stop` writes what `run` does. Only the commands you run yourself
+write elsewhere: `init` (`.gitignore`, and with `--agent` the skill and the hook config in
+`.claude/`, `.agents/skills/` or `.codex/`) and `rules accept` (the rules file and rule
+markers in tests).
 
 **`mutants/` is deleted at the start of every `run` that isn't reused, and of every
 `recheck`.** mutmut's cache gives

@@ -59,8 +59,17 @@ def run(
 
     Reuses the last verdict when nothing it depends on changed (see `mutineer fresh`).
     """
+    verdict = judge(Path.cwd(), base, no_mutation=no_mutation, no_reuse=no_reuse)
+    emit(verdict, format, output)
+    return exit_code(verdict, strict=strict)
+
+
+def judge(root: Path, base: str | None, *, no_mutation: bool, no_reuse: bool) -> Verdict:
+    """What ``run`` decides for the diff in ``root``, with the state stored as ``run`` does.
+
+    Prints nothing itself; ``run`` and ``hook stop`` render the result.
+    """
     started = time.monotonic()
-    root = Path.cwd()
     config = load_config(root)
     base_ref = gitdiff.resolve_base_ref(root, base or config.base)
     before = current_fingerprint(root, config, base_ref, no_mutation=no_mutation)
@@ -72,8 +81,7 @@ def run(
         if last.base_ref != base_ref:
             # recheck reads the name, so keep the one this run was given
             state.save(root, last.model_copy(update={"base_ref": base_ref}))
-        emit(verdict, format, output)
-        return exit_code(verdict, strict=strict)
+        return verdict
 
     checked = static_checks(root, config, base_ref)
 
@@ -110,8 +118,7 @@ def run(
             fingerprint=before if after == before else None,
         ),
     )
-    emit(verdict, format, output)
-    return exit_code(verdict, strict=strict)
+    return verdict
 
 
 def current_fingerprint(

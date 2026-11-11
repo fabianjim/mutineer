@@ -24,9 +24,11 @@ runs); `fresh` says whether it would, without running anything. `recheck` reruns
 agent's undisputed survivors; `dispute` (agent) and `resolve` (human) manage `.mutineer/disputes.toml`; `rules check`
 validates the rules file; `rules propose`/`reject` (agent) manage
 `.mutineer/proposals.toml`; `rules accept`/`dismiss` (human) turn proposals into rules and
-record answers; `init` writes a template and never overwrites. `init` and `rules accept`
-are the only commands that write outside `mutants/` and `.mutineer/`; `fresh` writes
-nothing. Invariants and the reasons for them:
+record answers; `init` writes a template and never overwrites, and with `--agent` installs
+the skill and merges the Stop hook into `.claude/`, `.agents/skills/` or `.codex/`;
+`hook stop` is that hook. `init` and `rules accept` are the only commands that write
+outside `mutants/` and `.mutineer/`; `fresh` writes nothing. Invariants and the reasons
+for them:
 
 - **Promises over details.** Only behaviour named in `.mutineer/rules.toml` is protected.
   A survivor in code no rule covers is a question for a human, never work for the agent,
@@ -51,6 +53,10 @@ nothing. Invariants and the reasons for them:
   A disputed `survivor_rule` is `mutant_disputed` for a human (WARN while open, INFO and in
   no score once confirmed; rejected, it is a `survivor_rule` again). A dispute is keyed by
   the mutmut function name plus the original and mutated text, never the mutant number.
+- **The Stop hook** (`hook stop`) blocks only when the agent report has a `next_command`;
+  never on `stop_hook_active`, a human-only finding or its own error, so it can't trap the
+  agent. It always exits 0 with one JSON object on stdout. The skill `init --agent`
+  installs ships in `src/mutineer/skill/`; a test checks every command in its SKILL.md.
 - **`--format agent`** follows `models.AgentReport`, checked in as
   `docs/schema/agent.schema.json` (`scripts/export_schema.py`).
 - **Growing the ledger.** Agents propose (`rules propose`) and never mark a test with an
@@ -124,8 +130,8 @@ nothing. Invariants and the reasons for them:
 - Unit tests go in `tests/unit/`; end-to-end tests in `tests/e2e/`, marked
   `@pytest.mark.slow` and built on `tests/fixtures/make_fixture.sh`.
 - Mutineer must never write outside `mutants/` and `.mutineer/` in a user's project,
-  except in the explicit human commands `init` (`.gitignore`) and `rules accept` (the rules
-  file, rule markers in tests).
+  except in the explicit human commands `init` (`.gitignore`; with `--agent`, `.claude/`,
+  `.agents/skills/`, `.codex/`) and `rules accept` (the rules file, rule markers in tests).
 - Every pytest run Mutineer starts passes `--ignore=mutants -p no:cacheprovider` and sets
   `PYTHONDONTWRITEBYTECODE=1`. Subprocesses use `sys.executable`.
 - Experiments go in a temporary directory or a fixture copy, never in this repo's tracked
