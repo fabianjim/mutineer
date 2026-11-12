@@ -292,7 +292,7 @@ DISPUTES_TEST = "tests/test_disputes.py"
 
 def _dispute_change(tamper_repo, definition):
     # the change defines "confirmed" in one source module and compares to it in another;
-    # both modules exist at base so they are tracked
+    # both modules exist at base; the untracked case is tested further down
     tamper_repo.base(
         {
             "src/shop/models.py": "class Dispute:\n    pass\n",
@@ -365,3 +365,51 @@ def test_one_finding_per_file_and_literal(tamper_repo):
     assert [(f.kind, f.location.line, f.evidence["lines"]) for f in findings] == [
         ("special_case_suspected", 9, [9, 11])
     ]
+
+
+AGENTS = "src/shop/agents.py"
+AGENTS_SOURCE = """HOOKS = {"claude": ".claude/settings.json"}
+
+
+def is_claude(agent):
+    return agent == "claude"
+"""
+AGENTS_TEST = """from shop.agents import is_claude
+
+
+def test_c():
+    assert is_claude("claude")
+"""
+
+
+def test_a_value_an_untracked_module_defines_is_a_domain_value(tamper_repo):
+    # the new module is never staged, so it is in the diff but not in the index
+    tamper_repo.base({"src/shop/other.py": "X = 2\n"})
+    assert tamper_repo.head({AGENTS: AGENTS_SOURCE, "tests/test_agents.py": AGENTS_TEST}) == []
+
+
+def test_a_value_another_untracked_module_defines_is_a_domain_value(tamper_repo):
+    # models.py is new and untracked, and defines the value disputes.py compares to
+    tamper_repo.base(
+        {
+            DISPUTES: "def is_closed(d):\n    return False\n",
+            DISPUTES_TEST: 'def test_closed():\n    assert d("confirmed")\n',
+        }
+    )
+    head = 'def is_closed(d):\n    if d.status == "confirmed":\n        return True\n'
+    models = 'class Dispute:\n    CONFIRMED = "confirmed"\n'
+    assert tamper_repo.head({"src/shop/models.py": models, DISPUTES: head}) == []
+
+
+def test_a_value_only_an_ignored_module_defines_still_warns(tamper_repo):
+    tamper_repo.base(
+        {
+            ".gitignore": "src/shop/generated.py\n",
+            DISPUTES: "def is_closed(d):\n    return False\n",
+            DISPUTES_TEST: 'def test_closed():\n    assert d("confirmed")\n',
+        }
+    )
+    head = 'def is_closed(d):\n    if d.status == "confirmed":\n        return True\n'
+    generated = 'CONFIRMED = "confirmed"\n'
+    findings = tamper_repo.head({"src/shop/generated.py": generated, DISPUTES: head})
+    assert [(f.kind, f.location.file) for f in findings] == [("special_case_suspected", DISPUTES)]

@@ -634,11 +634,11 @@ def _special_cases(
 ) -> Iterable[Finding]:
     """Changed source lines comparing to a literal that the tests also use.
 
-    Narrowed against false positives: a literal that already appears in tracked source
-    outside the changed lines, or that source defines anywhere (changed lines included,
-    see ``_known_source_literals``), is a known domain value (a status string, a file
-    name), not a test input being special-cased, so it is not reported. One finding per
-    file and literal.
+    Narrowed against false positives: a literal that already appears in source (tracked,
+    or untracked and not ignored) outside the changed lines, or that source defines
+    anywhere (changed lines included, see ``_known_source_literals``), is a known domain
+    value (a status string, a file name), not a test input being special-cased, so it is
+    not reported. One finding per file and literal.
     """
     changed_lines = {
         cf.path: {n for h in cf.hunks for n in range(h.start, h.start + h.length)} for cf in files
@@ -687,7 +687,11 @@ def _special_cases(
 def _known_source_literals(
     root: Path, test_paths: Sequence[str], changed_lines: dict[str, set[int]]
 ) -> set[tuple[str, object]]:
-    """Literals tracked non-test source knows as values.
+    """Literals non-test source knows as values.
+
+    Source is every ``.py`` file git tracks or would track: untracked, non-ignored files
+    are part of the diff (``load_diff``), so a new module vouches for its own values just
+    as it will once it is committed.
 
     A literal is known when it appears outside the lines this diff changed, or anywhere
     (changed lines included) in a defining position: a ``Literal[...]`` annotation, an
@@ -696,7 +700,7 @@ def _known_source_literals(
     counts too. A literal the diff only compares to is not known.
     """
     known: set[tuple[str, object]] = set()
-    for rel in _tracked_python(root):
+    for rel in _source_python(root):
         if is_under(rel, test_paths) or PurePosixPath(rel).name == "conftest.py":
             continue
         tree = _parse(_read_head(root, rel))
@@ -742,10 +746,12 @@ def _display_literals(node: ast.expr) -> Iterable[tuple[str, object]]:
             yield _lit_key(value)
 
 
-def _tracked_python(root: Path) -> list[str]:
+def _source_python(root: Path) -> list[str]:
+    """Tracked and untracked, non-ignored ``.py`` files, outside ``mutants/``."""
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+    args = ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "*.py"]
     proc = subprocess.run(
-        ["git", "-c", "core.quotepath=false", "ls-files", "-z", "--", "*.py"],
+        ["git", "-c", "core.quotepath=false", *args],
         cwd=root,
         env=env,
         capture_output=True,
