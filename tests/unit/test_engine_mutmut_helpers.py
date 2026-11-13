@@ -6,17 +6,20 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from mutineer.engine import _launch
 from mutineer.engine.mutmut_engine import (
+    MutmutEngine,
+    _Detail,
     locate,
     output_tail,
     render_anchors,
     status_for_exit_code,
 )
-from mutineer.models import FunctionRef, MutantStatus
+from mutineer.models import FunctionRef, MutantResult, MutantStatus
 
 
 @pytest.mark.parametrize(
@@ -188,3 +191,40 @@ def test_preflight_reads_the_projects_mutmut_config(tmp_path: Path) -> None:
     assert cfg.pytest_add_cli_args == ["-m", "not slow"]
     assert cfg.pytest_add_cli_args_test_selection == ["tests/unit"]
     assert cfg.version.startswith("3.8")
+
+
+def _result(n: int, status: MutantStatus) -> MutantResult:
+    return MutantResult(
+        name=f"shop.x_f__mutmut_{n}", function="shop.x_f", run="rule", status=status
+    )
+
+
+def test_details_reuse_known_names_and_show_only_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the rule pass reuses all-pass details: no mutmut show for names already detailed
+    (tmp_path / "f.py").write_text("def f(x):\n    return x + 1\n", encoding="utf-8")
+    fn = FunctionRef(file="f.py", qualname="f", mutmut_name="shop.x_f", start_line=1, end_line=2)
+    shown: list[list[str]] = []
+
+    def fake_launch(root: Path, overrides: object, args: list[str]) -> Any:
+        shown.append(args[1:])
+        body = "@@ -1,2 +1,2 @@\n def f(x):\n-    return x + 1\n+    return x - 1\n"
+        out = "".join(f"{_launch.RECORD_SEP}{n}\n{body}" for n in args[1:])
+        return subprocess.CompletedProcess(args, 0, out, "")
+
+    engine = MutmutEngine()
+    monkeypatch.setattr(engine, "_launch", fake_launch)
+    known = {"shop.x_f__mutmut_1": _Detail(2, "return x + 1", "return x * 1")}
+
+    same = [_result(1, MutantStatus.SURVIVED), _result(2, MutantStatus.KILLED)]
+    out = engine._with_details(tmp_path, same, [fn], known)
+    assert shown == []
+    assert (out[0].line, out[0].original, out[0].mutated) == (2, "return x + 1", "return x * 1")
+    assert out[1].mutated is None  # killed results get no details
+
+    new = [_result(1, MutantStatus.SURVIVED), _result(3, MutantStatus.SURVIVED)]
+    out = engine._with_details(tmp_path, new, [fn], known)
+    assert shown == [["shop.x_f__mutmut_3"]]
+    assert out[0].mutated == "return x * 1"
+    assert (out[1].line, out[1].original, out[1].mutated) == (2, "return x + 1", "return x - 1")

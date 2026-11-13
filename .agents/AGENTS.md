@@ -78,8 +78,9 @@ for them:
     a test whose body changed keeps its old test map, and a file copied unmutated earlier
     fails a later run with `nothing matches`. The two passes use different pytest args,
     which resets the cache anyway, and mutants requested by name always rerun;
-  - read `.meta` exit codes and `mutmut-stats.json` right after each pass (the next pass
-    overwrites them), only for the names requested; never use `mutmut results`;
+  - read `.meta` exit codes, `mutmut-stats.json` and `mutmut show` right after each pass
+    (the next pass overwrites them), only for the names requested; never use
+    `mutmut results`;
   - run mutmut's forced-fail run on the requested functions' covering tests only, and skip
     it when there are none; always skip the clean run: it passes whenever stats did,
     because no test runs in the process the mutants start from;

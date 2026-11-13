@@ -50,7 +50,10 @@ on, verified against mutmut 3.8.1. When upgrading mutmut, check each one again: 
   including functions outside the current scope. Read only the names requested in this
   call, and never use `mutmut results`.
 - **Each run overwrites the last.** A second run with different test args overwrites the
-  `.meta` exit codes and the stats file's test map. Read results right after each pass.
+  `.meta` exit codes and the stats file's test map. `mutmut show` needs the pass's mutated
+  files in `mutants/`, and a later run copies a file outside its `only_mutate` unmutated, so
+  `show` then prints `!error: … Could not find original function` (and still exits 0). Read
+  results and details right after each pass.
 - **Mutant text:** `mutmut show <name>` prints a unified diff of the function. A method is
   printed dedented, starting at its decorator if it has one.
 

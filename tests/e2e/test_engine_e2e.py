@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from mutineer.engine.mutmut_engine import MutmutEngine
+from mutineer.engine.mutmut_engine import RULE_PASS_ARGS, MutmutEngine, _Pass
 from mutineer.models import Diff, EngineRun, MutantResult, MutantStatus, RuleMap
 
 pytestmark = pytest.mark.slow
@@ -125,6 +125,66 @@ def test_agent_gap_two_passes(
     assert sum(r.status == K for r in rule_pass) == 3
     express = {r.original for r in rule_pass if r.line == 12}
     assert express == {"rate += EXPRESS_FEE"}
+
+
+def test_details_survive_a_rule_pass_over_other_files(
+    shop_copy: Any, engine: MutmutEngine, ship_rule_map: RuleMap, diff_of: DiffOf
+) -> None:
+    # pricing.py is only in the all pass; the rule pass rebuilds mutants/ for shipping.py
+    shop_copy.checkout("agent")
+    root = shop_copy.path
+    shipping = root / "src/shop/shipping.py"
+    text = shipping.read_text(encoding="utf-8")
+    old = "    if total >= FREE_SHIPPING_MIN:"
+    assert old in text
+    shipping.write_text(
+        text.replace(old, "    if total >= FREE_SHIPPING_MIN and total > 0:"), encoding="utf-8"
+    )
+
+    run = engine.run(diff_of(root), ship_rule_map, root)
+
+    assert not run.baseline_failed
+    assert by_run(run, "rule")
+    assert {r.function for r in by_run(run, "rule")} == {"shop.shipping.x_quote"}
+    pricing = [r for r in by_run(run, "all") if r.function.startswith("shop.pricing.")]
+    assert any(r.status != K for r in pricing)
+    assert (14, "return int(total // 11)") in survivors(run, "all")
+    for r in run.results:
+        if r.status != K:
+            assert r.line is not None and r.original and r.mutated is not None, r
+
+
+def test_rule_pass_no_tests_copies_keep_details(
+    shop_copy: Any,
+    engine: MutmutEngine,
+    ship_rule_map: RuleMap,
+    diff_of: DiffOf,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # the rule pass reports no tests: its results are copies of every all-pass result,
+    # killed ones included, and each copy needs details of its own
+    shop_copy.checkout("agent-gap")
+    root = shop_copy.path
+    real = engine._mutmut_run
+
+    def rule_pass_without_tests(
+        root: Path, files: list[str], functions: list[Any], pytest_args: list[str]
+    ) -> Any:
+        out = real(root, files, functions, pytest_args)
+        if pytest_args[-len(RULE_PASS_ARGS) :] == list(RULE_PASS_ARGS):
+            return _Pass("no_tests", out.output, exit_codes=out.exit_codes)
+        return out
+
+    monkeypatch.setattr(engine, "_mutmut_run", rule_pass_without_tests)
+    run = engine.run(diff_of(root), ship_rule_map, root)
+
+    assert not run.baseline_failed
+    rule_pass = by_run(run, "rule")
+    assert len(rule_pass) == 7
+    assert {r.status for r in rule_pass} == {N}
+    assert {r.mutated for r in rule_pass} >= {"rate = EXPRESS_FEE", "rate -= EXPRESS_FEE"}
+    for r in rule_pass:
+        assert r.line is not None and r.original and r.mutated is not None, r
 
 
 # ---- baseline ----

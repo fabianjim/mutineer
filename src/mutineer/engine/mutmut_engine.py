@@ -11,7 +11,8 @@ Invariants:
   cache" in ``docs/mutmut.md``), and both passes invalidate most of it anyway. Mutineer
   writes nowhere else (ENGINE-001).
 - **Read only what was asked, right after asking** (ENGINE-002): results come from the
-  ``.meta`` keys of the functions requested in that call, read before the next call.
+  ``.meta`` keys of the functions requested in that call, read before the next call. The
+  same goes for ``mutmut show``: it needs that call's mutated files in ``mutants/``.
 - **Never an empty scope**: no mutable changed function means no mutmut call.
 """
 
@@ -24,7 +25,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from glob import escape as glob_escape
 from pathlib import Path
@@ -188,7 +189,11 @@ class MutmutEngine:
 
         tests_by_function = all_pass.tests_by_function
         unreached = [f.mutmut_name for f in functions if not tests_by_function.get(f.mutmut_name)]
-        results = _results(all_pass.exit_codes, functions, "all")
+        # details now: the rule pass rebuilds mutants/ for its files only, and mutmut show
+        # can't find the original function of a file it left unmutated
+        results = self._with_details(
+            root, _results(all_pass.exit_codes, functions, "all"), functions
+        )
 
         rule_covered = [
             f
@@ -203,17 +208,26 @@ class MutmutEngine:
             )
             if rule_pass.kind == "baseline_failed":
                 baseline_failed, baseline_output = True, rule_pass.output
-            elif rule_pass.kind == "no_tests":
-                covered = {f.mutmut_name for f in rule_covered}
-                results += [
-                    r.model_copy(update={"run": "rule", "status": MutantStatus.NO_TESTS})
-                    for r in results
-                    if r.function in covered
-                ]
             else:
-                results += _results(rule_pass.exit_codes, rule_covered, "rule")
+                # same source on disk, so a name detailed after the all pass keeps its details
+                known = {
+                    r.name: _Detail(r.line, r.original, r.mutated)
+                    for r in results
+                    if r.mutated is not None
+                }
+                if rule_pass.kind == "no_tests":
+                    # copies of all-pass results; a killed one had no details, and mutants/
+                    # still holds the rule-covered files, so show can fill it
+                    covered = {f.mutmut_name for f in rule_covered}
+                    rule_results = [
+                        r.model_copy(update={"run": "rule", "status": MutantStatus.NO_TESTS})
+                        for r in results
+                        if r.function in covered
+                    ]
+                else:
+                    rule_results = _results(rule_pass.exit_codes, rule_covered, "rule")
+                results += self._with_details(root, rule_results, functions, known)
 
-        results = self._with_details(root, results, functions)
         return finish(
             baseline_failed=baseline_failed,
             baseline_output=baseline_output,
@@ -420,12 +434,38 @@ class MutmutEngine:
     # ---- mutant details ----
 
     def _with_details(
-        self, root: Path, results: list[MutantResult], functions: list[FunctionRef]
+        self,
+        root: Path,
+        results: list[MutantResult],
+        functions: list[FunctionRef],
+        known: Mapping[str, _Detail] | None = None,
     ) -> list[MutantResult]:
-        """Fill ``line``/``original``/``mutated`` for every result that isn't killed."""
-        names = sorted({r.name for r in results if r.status not in _NOT_KILLED_EXEMPT})
-        if not names:
-            return results
+        """Fill ``line``/``original``/``mutated`` for every result that isn't killed.
+
+        Call it right after the pass that produced ``results``: ``mutmut show`` reads that
+        pass's mutated files in ``mutants/``. Names in ``known`` take those details instead
+        of a ``show`` call.
+        """
+        details: dict[str, _Detail] = dict(known or {})
+        names = sorted(
+            {r.name for r in results if r.status not in _NOT_KILLED_EXEMPT} - details.keys()
+        )
+        if names:
+            details.update(self._show(root, names, functions))
+        out = []
+        for r in results:
+            d = details.get(r.name)
+            if d is not None and r.status not in _NOT_KILLED_EXEMPT:
+                r = r.model_copy(
+                    update={"line": d.line, "original": d.original, "mutated": d.mutated}
+                )
+            out.append(r)
+        return out
+
+    def _show(
+        self, root: Path, names: list[str], functions: list[FunctionRef]
+    ) -> dict[str, _Detail]:
+        """One ``mutmut show`` for ``names``, each diff mapped to the head file."""
         proc = self._launch(root, {}, ["show", *names])
         if proc.returncode != 0:
             raise EngineError(f"mutmut show failed:\n{output_tail(proc.stdout + proc.stderr)}")
@@ -444,15 +484,7 @@ class MutmutEngine:
             details[name] = locate(
                 diff_text, texts[fn.file], fn, anchors[fn.file].get(fn.qualname, fn.start_line)
             )
-        out = []
-        for r in results:
-            d = details.get(r.name)
-            if d is not None and r.status not in _NOT_KILLED_EXEMPT:
-                r = r.model_copy(
-                    update={"line": d.line, "original": d.original, "mutated": d.mutated}
-                )
-            out.append(r)
-        return out
+        return details
 
 
 # ---- helpers (module level so tests can reach them without mutmut) ----
