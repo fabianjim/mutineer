@@ -159,8 +159,17 @@ run there (see "Failures and exit codes").
   Test pollution (a test that passes only after another ran first in the same process) is
   not supported. Under `fork`, when the two tests land in different stats children the stats
   run fails, a BLOCK, and the launcher prints a line naming test pollution as the likely
-  cause; when they land in the same child the stats run passes and that test's mutants can
-  be killed falsely, with no warning.
+  cause. When they land in the same child (always with one chunk, and under `forkserver`
+  with mutmut's own single child), the stats run passes, and every mutant of a function
+  covered by the dependent test but not the other one fails it whatever the mutant did: a
+  false kill of every mutant. So after the mutants the launcher reruns unmutated
+  (`MUTANT_UNDER_TEST=""`) the covering tests of each function none of whose mutants
+  survived, in the order its mutants got them, each distinct list once in its own forked
+  child, up to `max_children` at a time. A failure is a failing baseline, BLOCK: the
+  launcher prints the check's pytest output and a line naming test pollution, the function
+  and its tests. A function with a survivor is skipped, because its covering tests all
+  passed in exactly that setup; the check never runs after a failed baseline or an
+  interrupt.
 - **No test for any requested function:** exit 1, `Stopping early, because we could not find
   any test case`, and no results written.
 - **Tests hit no mutant's module path:** `Stopping early, because tests recorded trampoline
@@ -172,7 +181,8 @@ run there (see "Failures and exit codes").
 
 mutmut runs several pytest sessions at once: the mutants (`max_children` forked children),
 and alongside them the stats run (split into children), the forced-fail run, the test
-listing and the forkserver warm-up. By default every one of them
+listing and the forkserver warm-up, and after them the launcher's unmutated checks of the
+functions with no survivor (up to `max_children` children). By default every one of them
 uses pytest's shared temp root, `$TMPDIR/pytest-of-<user>/`: each session makes a numbered
 `pytest-<n>` there, re-points `pytest-current` at it and, when it finishes, removes old
 numbered dirs and dead symlinks. Two sessions that finish together can both try to unlink
@@ -187,8 +197,8 @@ So for `run` the launcher makes one temp dir, `mutineer-pytest-*` in the system 
 each call adds a plugin to `pytest.main`'s `plugins`. Its `pytest_configure` hook (marked
 `tryfirst`, so it runs before pytest's `tmpdir` plugin reads the option) sets
 `config.option.basetemp` to a new dir under the launcher's dir when it is unset. The dir is
-made in the process that calls `pytest.main`: each forked mutant and each split stats child
-gets its own. With a given basetemp pytest makes no numbered dirs, no `pytest-current` link
+made in the process that calls `pytest.main`: each forked mutant, split stats child and
+check child gets its own. With a given basetemp pytest makes no numbered dirs, no `pytest-current` link
 and cleans up no other session's dirs. The launcher removes its dir when it finishes, also
 on failure, and only in its own process: forked children leave through `os._exit`, and one
 that escaped with an exception must not remove a dir its siblings still use.

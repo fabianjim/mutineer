@@ -559,6 +559,115 @@ def test_test_pollution_split_over_stats_children_blocks_under_fork(
     assert "test_b" in run.baseline_output  # the failing child's pytest output
 
 
+def pkg_repo(git_repo: Any, isolation: str, tests: str) -> Path:
+    """A repo whose diff adds ``TWICE_MODULE``'s ``f`` and ``g``, tested by ``tests``."""
+    git_repo.write(
+        "pyproject.toml",
+        f'[tool.mutmut]\nsource_paths = ["src/pkg"]\nprocess_isolation = "{isolation}"\n\n'
+        '[tool.pytest.ini_options]\npythonpath = ["src"]\n',
+    )
+    git_repo.write("src/pkg/__init__.py", "")
+    git_repo.write("tests/conftest.py", "")
+    git_repo.write("tests/helper.py", "STATE = {}\n")
+    git_repo.write("tests/test_m.py", tests)
+    git_repo.write(".gitignore", "mutants/\n")
+    git_repo.commit("base")
+    git_repo.write("src/pkg/m.py", TWICE_MODULE)
+    return Path(git_repo.path)
+
+
+def assert_polluted_kills_block(run: EngineRun) -> None:
+    assert run.baseline_failed
+    assert run.results == []
+    out = run.baseline_output or ""
+    assert "test pollution" in out
+    assert "pkg.m.x_f" in out  # the function whose mutants were all killed falsely
+    assert "test_b" in out
+
+
+# test_a and test_b in one stats child pass there; every mutant of f then runs test_b alone,
+# where it fails whatever the mutant did
+@pytest.mark.parametrize("isolation", ["fork", "forkserver"])
+def test_test_pollution_inside_one_stats_child_blocks(
+    git_repo: Any, diff_of: DiffOf, isolation: str
+) -> None:
+    root = pkg_repo(git_repo, isolation, POLLUTED_TESTS)
+    run = MutmutEngine(max_children=1).run(diff_of(root), {}, root)
+    assert_polluted_kills_block(run)
+
+
+POLLUTED_SPLIT_TESTS = (
+    POLLUTED_TESTS
+    + """
+
+def test_a2():
+    assert g(3) == 6
+"""
+)
+
+
+def test_test_pollution_dealt_into_one_stats_child_blocks_under_fork(
+    git_repo: Any, diff_of: DiffOf
+) -> None:
+    root = pkg_repo(git_repo, "fork", POLLUTED_SPLIT_TESTS)
+    # the sorted ids dealt over two children: [test_a, test_b] and [test_a2]
+    run = MutmutEngine(max_children=2).run(diff_of(root), {}, root)
+    assert_polluted_kills_block(run)
+
+
+MIXED_TESTS = """\
+import time
+
+from pkg.m import f, g
+
+
+def test_a():
+    time.sleep(0.3)  # slower than test_c, so the mutants run test_c first under fork
+    assert g(2) == 4
+
+
+def test_b():
+    f(1)  # result unchecked: every f mutant survives
+
+
+def test_c():
+    assert g(0) == 0  # weak: most g mutants pass it and go on to test_a
+"""
+
+
+@pytest.mark.parametrize("isolation", ["fork", "forkserver"])
+def test_unmutated_check_only_for_functions_without_survivors(
+    git_repo: Any, diff_of: DiffOf, tmp_path: Path, isolation: str
+) -> None:
+    root = pkg_repo(git_repo, isolation, MIXED_TESTS)
+    log = tmp_path / "tests.log"
+    add_test_logger(root, log)
+
+    run = MutmutEngine().run(diff_of(root), {}, root)
+    assert not run.baseline_failed
+    assert {(r.function, r.status) for r in run.results} == {("pkg.m.x_f", S), ("pkg.m.x_g", K)}
+    (run_starts,) = logged_runs(log)
+    g_tests = ["tests/test_m.py::test_c", "tests/test_m.py::test_a"]
+    # no clean run, so every unmutated start is the check's, all after the forced fail
+    checked = started(run_starts, "")
+    first_fail = [v for v, _ in run_starts].index("fail")
+    assert all(v != "" for v, _ in run_starts[:first_fail])
+    # only g, whose mutants were all killed, each covering test once
+    assert sorted(checked) == sorted(g_tests)
+    # in the order its mutants ran them: each mutant's starts are a prefix of the check's
+    by_mutant: dict[str, list[str]] = {}
+    for value, nodeid in run_starts:
+        if value and value.startswith("pkg.m.x_g__mutmut_"):
+            by_mutant.setdefault(value, []).append(nodeid)
+    assert by_mutant
+    for starts in by_mutant.values():
+        assert checked[: len(starts)] == starts
+    if isolation == "fork":
+        # fastest first, as ForkRunner ran them: test_c let most mutants through to test_a
+        assert checked == g_tests
+        assert any(starts == g_tests for starts in by_mutant.values())
+
+
 # ---- mutmut's stats run ----
 
 PID_LOGGER = """

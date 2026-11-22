@@ -72,6 +72,7 @@ _BASELINE_FAILED = (
     "failed to collect stats",
     "Failed to collect list of tests",
     "Failed to run clean test",
+    _launch.POLLUTED_KILLS,
 )
 _NO_TESTS_AT_ALL = "Stopping early, because we could not find any test case"
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")

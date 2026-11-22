@@ -31,12 +31,20 @@ which every mutant forks from, never runs a test: a test that passes only once p
 then passes in each mutant, as under ``forkserver``. The children's pytest output is printed
 when one fails, and when a split stats run fails the launcher adds that a test may depend on
 another having run first in the same process (test pollution), which Mutineer doesn't
-support. Two such tests dealt into the same child pass, and their mutants can then be killed
-falsely.
+support. Two such tests dealt into the same child pass; the check below catches that.
+
+``run`` checks, after a normal end of mutmut's mutant loop, the functions none of whose
+mutants survived: their covering tests run unmutated, in the order their mutants got them,
+each distinct list in its own forked child (at most ``max_workers`` at a time). Test
+pollution hidden in one stats child kills every mutant of a function falsely, because each
+mutant runs only its function's tests in a fresh process; a function with a survivor
+can't be affected. A failing check prints its pytest output and a ``POLLUTED_KILLS`` line
+naming the function and its tests, and the launcher exits 1: a failing baseline.
 
 ``run`` gives every pytest session mutmut starts its own basetemp. Sessions run
 concurrently (mutants, split stats children, and the forced-fail, listing and warm-up runs
-beside them), and on pytest's shared default root two that finish together
+beside them, then the unmutated checks), and on pytest's shared default root two that
+finish together
 can crash in its cleanup (``FileNotFoundError`` unlinking a dead ``pytest-current``); the
 crash becomes a false kill under ``fork`` or a false timeout under ``forkserver``. The
 launcher makes one ``mutineer-pytest-*`` dir in the system temp dir (never under
@@ -65,7 +73,13 @@ Private mutmut names used: ``mutmut.configuration._load_config``, ``._config``,
 ``mutmut.runners.harness.CollectTestsFailedException``, ``PytestRunner.run_stats``,
 ``mutmut.models.results.StatsResult``, and ``state()``'s ``function_dependencies`` and
 ``stats_time`` (merged);
-``mutmut.runners.harness.PytestRunner.execute_pytest`` (replaced). Exit codes
+``mutmut.runners.harness.PytestRunner.execute_pytest`` (replaced);
+``mutmut.__main__._register_mutant_result`` and ``startup`` and ``stop_all_workers`` on
+``ForkServerRunner`` and ``ForkRunner`` (wrapped), ``MutantResult``'s ``mutant_name`` and
+``exit_code``, ``mutmut.utils.format_utils.mangled_name_from_mutant_name``,
+``mutmut.mutation.trampoline.set_mutant_under_test``, and ``ForkRunner.test_runner``,
+``ForkServerRunner.test_runner_class`` and ``.test_runner_args``, and ``.max_workers`` on
+both, for the unmutated check. Exit codes
 ``EXIT_VERSION`` and ``EXIT_CONFIG`` mean mutmut is out of range or has no usable
 ``source_paths``; the reason is on stderr.
 """
@@ -78,7 +92,7 @@ import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -96,6 +110,10 @@ TEST_POLLUTION = (
     "mutineer: the stats run was split over processes; a test may depend on another test "
     "having run first in the same process (test pollution), which Mutineer doesn't support"
 )
+POLLUTED_KILLS = (
+    "mutineer: every mutant was killed, but the covering tests also fail without a mutant"
+)
+"""The fixed start of the line naming a function whose unmutated check failed."""
 _GLOB_SUFFIX = "__mutmut_*"
 
 
@@ -210,17 +228,28 @@ def main(argv: list[str]) -> None:
         return
     _scope_baseline_runs()
     _split_stats_run()
+    check_full_kills = _watch_full_kills()
     sys.argv = ["mutmut", command, *args]
     temp_root = tempfile.mkdtemp(prefix="mutineer-pytest-")
     owner = os.getpid()
     try:
         _own_basetemp(temp_root)
-        cli()
+        try:
+            cli()
+        except SystemExit as exc:
+            # click ends a normal run with SystemExit(0); anything else is mutmut failing,
+            # or a forked child that escaped
+            if exc.code not in (0, None) or os.getpid() != owner:
+                raise
+        sys.stdout.flush()
+        code = check_full_kills()  # its sessions need temp_root
     finally:
         # forked children leave through os._exit; one that escaped with an exception must
         # not remove the dir its siblings still use
         if os.getpid() == owner:
             shutil.rmtree(temp_root, ignore_errors=True)
+    if code:
+        raise SystemExit(code)
 
 
 def _scope_baseline_runs() -> None:
@@ -386,84 +415,33 @@ def _stats_in_children(
     children that failed. Returns 0 only when every child sent a result and every result's
     exit code is 0.
     """
-    import io
-    import pickle
-    import signal
-    import traceback
+    import functools
 
     from mutmut.models.results import StatsResult
     from mutmut.state import state
 
-    def run_chunk(chunk: list[str]) -> bytes:
-        streams = sys.stdout, sys.stderr
-        captured = io.StringIO()
-        if show_output:
-            sys.stdout = sys.stderr = captured
-        try:
-            exit_code = make_runner().run_stats(tests=chunk)
-        finally:
-            sys.stdout, sys.stderr = streams
-        result = StatsResult(
+    def run_chunk(chunk: list[str]) -> dict[str, Any]:
+        exit_code = make_runner().run_stats(tests=chunk)
+        return StatsResult(
             exit_code=exit_code,
             tests_by_mangled_function_name=dict(state().tests_by_mangled_function_name),
             duration_by_test=dict(state().duration_by_test),
             stats_time=state().stats_time or 0.0,
             function_dependencies=dict(state().function_dependencies),
-        )
-        return pickle.dumps({"result": result.to_dict(), "output": captured.getvalue()})
+        ).to_dict()
 
-    pids: list[int] = []  # in chunk order
-    readers: dict[int, int] = {}  # pid -> read end of its pipe, until read
-    running: set[int] = set()  # pids not reaped yet
-    payloads: dict[int, bytes] = {}
-    codes: dict[int, int] = {}
-    try:
-        for chunk in chunks:
-            read_fd, write_fd = os.pipe()
-            pid = os.fork()
-            if pid == 0:
-                try:
-                    os.close(read_fd)
-                    payload = run_chunk(chunk)
-                    with os.fdopen(write_fd, "wb") as out:
-                        out.write(payload)
-                except BaseException:
-                    traceback.print_exc()
-                    os._exit(1)
-                os._exit(0)
-            os.close(write_fd)
-            pids.append(pid)
-            readers[pid] = read_fd
-            running.add(pid)
-        # read every pipe to the end before waiting: a child blocks on a full pipe
-        for pid in list(readers):
-            with os.fdopen(readers.pop(pid), "rb") as pipe:
-                payloads[pid] = pipe.read()
-        for pid in list(running):
-            _, status = os.waitpid(pid, 0)
-            running.discard(pid)
-            codes[pid] = os.waitstatus_to_exitcode(status)
-    finally:
-        # only left over when this process failed half-way: leave no orphan behind
-        for fd in readers.values():
-            os.close(fd)
-        for pid in running:  # not reaped yet, so the pid is still this child's
-            os.kill(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
-
+    jobs = [functools.partial(run_chunk, chunk) for chunk in chunks]
     failed = 0
-    for pid in pids:
-        code = codes[pid]
+    for code, sent, output in _in_children(jobs, limit=len(jobs), capture=show_output):
         try:
-            sent: dict[str, Any] | None = pickle.loads(payloads[pid]) if code == 0 else None
-            result = StatsResult.from_dict(sent["result"]) if sent else None
-        except Exception:  # an empty or cut-off payload
+            result = StatsResult.from_dict(sent) if sent is not None else None
+        except Exception:  # a cut-off result
             result = None
         if result is None:
             failed = failed or code or 1
             continue
-        if show_output and result.exit_code and sent and sent["output"]:
-            print(sent["output"], end="")
+        if show_output and result.exit_code and output:
+            print(output, end="")
         for key, of_key in result.tests_by_mangled_function_name.items():
             state().tests_by_mangled_function_name[key] |= of_key
         state().duration_by_test.update(result.duration_by_test)
@@ -473,6 +451,196 @@ def _stats_in_children(
             state().function_dependencies[key] |= callers
         failed = failed or result.exit_code
     return int(failed)
+
+
+def _in_children(
+    jobs: Sequence[Callable[[], Any]], *, limit: int, capture: bool = False
+) -> list[tuple[int, Any, str]]:
+    """Run each job in its own forked child, at most ``limit`` at a time.
+
+    Returns, per job and in job order, the child's exit code, the job's return value
+    (``None`` when the child sent none: it raised, crashed or was cut off) and, with
+    ``capture``, what the job printed to ``sys.stdout`` and ``sys.stderr``. Each pipe is read
+    to the end before its child is reaped, and every child is reaped on every path.
+    """
+    import contextlib
+    import io
+    import pickle
+    import signal
+    import traceback
+
+    def run_job(job: Callable[[], Any]) -> bytes:
+        streams = sys.stdout, sys.stderr
+        captured = io.StringIO()
+        if capture:
+            sys.stdout = sys.stderr = captured
+        try:
+            value = job()
+        finally:
+            sys.stdout, sys.stderr = streams
+        return pickle.dumps((value, captured.getvalue()))
+
+    results: list[tuple[int, Any, str]] = [(1, None, "")] * len(jobs)
+    readers: dict[int, tuple[int, int]] = {}  # pid -> job index and its pipe's read end
+    running: set[int] = set()  # pids not reaped yet
+
+    def collect(pid: int) -> None:
+        index, read_fd = readers.pop(pid)
+        # read the pipe to the end before waiting: a child blocks on a full pipe
+        with os.fdopen(read_fd, "rb") as pipe:
+            payload = pipe.read()
+        _, status = os.waitpid(pid, 0)
+        running.discard(pid)
+        code = os.waitstatus_to_exitcode(status)
+        value, output = None, ""
+        if code == 0:
+            with contextlib.suppress(Exception):  # an empty or cut-off payload
+                value, output = pickle.loads(payload)
+        results[index] = (code, value, output)
+
+    try:
+        for index, job in enumerate(jobs):
+            if len(running) >= limit:
+                collect(next(iter(readers)))  # the oldest
+            read_fd, write_fd = os.pipe()
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    os.close(read_fd)
+                    payload = run_job(job)
+                    with os.fdopen(write_fd, "wb") as pipe:
+                        pipe.write(payload)
+                except BaseException:
+                    traceback.print_exc()
+                    os._exit(1)
+                os._exit(0)
+            os.close(write_fd)
+            readers[pid] = (index, read_fd)
+            running.add(pid)
+        while readers:
+            collect(next(iter(readers)))
+    finally:
+        # only left over when this process failed half-way: leave no orphan behind
+        for _, read_fd in readers.values():
+            os.close(read_fd)
+        for pid in running:  # not reaped yet, so the pid is still this child's
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+    return results
+
+
+def _watch_full_kills() -> Callable[[], int]:
+    """Prepare the unmutated check of the functions none of whose mutants survived.
+
+    A test that passes only after another one ran in the same process (test pollution) can
+    hide in one stats child, where the two run together. Each mutant runs only its
+    function's covering tests in a fresh process, where such a test fails whatever the
+    mutant did, so every mutant of the function is killed falsely. A function with a
+    survivor can't be affected: its covering tests all passed in exactly that setup.
+
+    This wraps mutmut to record each finished mutant's exit code (``_register_mutant_result``),
+    the mutant runner (``startup``) and an interrupted mutant loop (``stop_all_workers``:
+    mutmut catches the interrupt and then ends normally). It returns the check, to call only
+    after ``run`` ended normally. For each function with covering tests and no mutant that
+    exited 0, the check runs those tests unmutated, in the order its mutants got them, each
+    distinct list once, in its own forked child of the launcher, at most ``max_workers`` at
+    a time. It returns 0 when all pass; otherwise it prints each failing check's pytest
+    output and a ``POLLUTED_KILLS`` line per function, and returns 1. A check that crashed
+    prints its own line instead, without ``POLLUTED_KILLS``, so the run fails as an error.
+    """
+    import functools
+
+    import mutmut.__main__ as mutmut_main
+    from mutmut.mutation.trampoline import set_mutant_under_test
+    from mutmut.state import state
+    from mutmut.utils.format_utils import mangled_name_from_mutant_name
+    from mutmut.workers import isolation
+
+    codes_by_function: dict[str, list[int]] = {}
+    runners: list[Any] = []
+    interrupted = False
+    original_register = mutmut_main._register_mutant_result
+
+    def register_mutant_result(result: Any, *args: Any, **kwargs: Any) -> None:
+        original_register(result, *args, **kwargs)
+        function = mangled_name_from_mutant_name(result.mutant_name)
+        codes_by_function.setdefault(function, []).append(result.exit_code)
+
+    def recording_startup(original: Any) -> Any:
+        def startup(self: Any) -> None:
+            runners.append(self)
+            original(self)
+
+        return startup
+
+    def recording_stop(original: Any) -> Any:
+        def stop_all_workers(self: Any) -> None:
+            nonlocal interrupted
+            interrupted = True
+            original(self)
+
+        return stop_all_workers
+
+    def run_unmutated(make_runner: Callable[[], Any], tests: list[str]) -> int:
+        set_mutant_under_test("")  # mutmut's value for the clean run
+        return int(make_runner().run_tests(mutant_name=None, tests=tests))
+
+    def check() -> int:
+        if interrupted or not runners:
+            return 0
+        runner = runners[-1]
+        under_fork = isinstance(runner, isolation.ForkRunner)
+        test_map = state().tests_by_mangled_function_name
+        durations = state().duration_by_test
+        functions_by_tests: dict[tuple[str, ...], list[str]] = {}
+        for function, codes in sorted(codes_by_function.items()):
+            covering = test_map.get(function)
+            if not covering or 0 in codes:
+                continue
+            # the list its mutants got: ForkServerRunner sends list(tests) of this very set;
+            # ForkRunner.submit sorts that list by duration (a stable sort)
+            tests = list(covering)
+            if under_fork:
+                tests.sort(key=lambda t: durations[t])
+            functions_by_tests.setdefault(tuple(tests), []).append(function)
+        if not functions_by_tests:
+            return 0
+
+        def make_runner() -> Any:
+            if under_fork:
+                return runner.test_runner
+            # under forkserver the launcher never imports pytest: build the runner in the child
+            return runner.test_runner_class(**runner.test_runner_args)
+
+        lists = list(functions_by_tests)
+        jobs = [functools.partial(run_unmutated, make_runner, list(tests)) for tests in lists]
+        failed = 0
+        for key, (code, sent, output) in zip(
+            lists, _in_children(jobs, limit=runner.max_workers, capture=True), strict=True
+        ):
+            # 5: pytest collected none of them, as for the mutants, whose status says so
+            if sent in (0, 5):
+                continue
+            functions = ", ".join(functions_by_tests[key])
+            if sent is None:
+                print(f"mutineer: the unmutated check of {functions} crashed (exit {code})")
+                failed = 1
+                continue
+            print(output, end="")
+            for function in functions_by_tests[key]:
+                print(
+                    f"{POLLUTED_KILLS}: {function} ({', '.join(key)}); a test likely "
+                    "depends on another test having run first in the same process "
+                    "(test pollution), which Mutineer doesn't support"
+                )
+            failed = 1
+        return failed
+
+    mutmut_main._register_mutant_result = register_mutant_result
+    for cls in (isolation.ForkServerRunner, isolation.ForkRunner):
+        cls.startup = recording_startup(cls.startup)  # type: ignore[method-assign]
+        cls.stop_all_workers = recording_stop(cls.stop_all_workers)  # type: ignore[method-assign]
+    return check
 
 
 def _forget_mutineer() -> None:

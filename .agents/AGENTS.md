@@ -87,7 +87,10 @@ for them:
   - split the stats run round-robin over `min(max_children, 4, tests)` children; under
     `fork` run even one chunk, and the forced fail, in a forked child, because every mutant
     forks from the launcher and a test run there would run a second time in each mutant.
-    A split can fail a suite with test pollution, which Mutineer doesn't support;
+    A split can fail a suite with test pollution, which Mutineer doesn't support. After the
+    mutants, rerun unmutated the covering tests of each function with no survivor, as its
+    mutants ran them, because pollution inside one stats child kills every mutant of such
+    a function falsely; a failure is a failing baseline;
   - give every pytest session mutmut starts its own basetemp, unless the project sets one:
     sessions sharing pytest's default temp root crash in its cleanup when they finish
     together, and the crash becomes a false kill or timeout;
