@@ -10,7 +10,7 @@ from mutineer.models import Diff, EngineRun, RuleMap
 
 class Engine(Protocol):
     def run(self, diff: Diff, rule_map: RuleMap, root: Path) -> EngineRun:
-        """All pass over the changed functions, then the rule pass over rule-covered ones."""
+        """One pass over the changed functions, rule tests first; "rule" results derived from it."""
         ...
 
     def rerun(self, names: list[str], rule_map: RuleMap, root: Path) -> EngineRun:

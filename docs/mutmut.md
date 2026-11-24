@@ -24,7 +24,13 @@ on, verified against mutmut 3.8.1. When upgrading mutmut, check each one again: 
   (caught), `PytestRunner.run_stats` (called), `mutmut.models.results.StatsResult` and
   `state()`'s `function_dependencies` and `stats_time` (merged), to split the stats run
   (see "The cache"); `mutmut.runners.harness.PytestRunner.execute_pytest`
-  (replaced), to give every pytest session its own basetemp (see "Temp dirs").
+  (replaced), to give every pytest session its own basetemp (see "Temp dirs") and, in
+  `run`, run rule tests first; for that, the `MUTANT_UNDER_TEST` environment variable and
+  its `"stats"` value (mutmut's `set_mutant_under_test` mirrors it into the environment),
+  raw pytest exit codes passing unchanged through `ForkRunner.submit`,
+  `ForkServerRunner._forkserver_main` and `mutmut.__main__._register_mutant_result` into
+  `.meta`, and `mutmut.stats.status_by_exit_code` tolerating an unknown code (see "Rule
+  tests first").
 - **Scope to files** with `only_mutate`. An empty `only_mutate` means every file matches, so
   never pass it empty.
 - **Scope to functions** with fnmatch globs: `mutmut run "shop.pricing.x_discount__mutmut_*"`.
@@ -32,7 +38,9 @@ on, verified against mutmut 3.8.1. When upgrading mutmut, check each one again: 
   A glob that matches no mutant fails with `AssertionError: Filtered for specific mutants,
   but nothing matches`, so only send globs for functions known to have mutants.
 - **pytest keeps only the last `-m`.** Adding `-m rule` would silently drop a project's own
-  `-m "not slow"`, so the rule pass selects tests with `-p mutineer --mutineer-rule-only`.
+  `-m "not slow"`, so `recheck`'s rule pass selects tests with
+  `-p mutineer --mutineer-rule-only`. `run` selects nothing: it runs rule tests first (see
+  "Rule tests first").
 - **mutmut copies `tests/` into `mutants/tests/`.** Collecting from the project root picks up
   the copies with ids prefixed `mutants/`. Every pytest run passes `--ignore=mutants`; with
   it, rule-marker node ids match mutmut's exactly.
@@ -97,7 +105,7 @@ structure, so the engine asks mutmut's own generator (`mutate_file_contents`, vi
 
 1. **A config change resets everything.** mutmut fingerprints `pytest_add_cli_args` and
    `pytest_add_cli_args_test_selection` in `mutmut-stats.json` and resets all results when
-   they change. The two passes use different args, so they never share a cache.
+   they change. `run` and `recheck` use different args, so they never share a cache.
 2. **Named mutants always rerun**, cached or not.
 3. **Stale test copies.** `tests/` is copied with `copytree(dirs_exist_ok=True)`, which never
    deletes. A test deleted or renamed in the project keeps running from `mutants/tests/`.
@@ -176,6 +184,29 @@ run there (see "Failures and exit codes").
   hits but none match any mutant key`. A project setup problem (e.g. `pythonpath` makes tests
   import `foo` instead of `pkg.foo`), raised as `EngineError` with the output.
 - `FAILED: Unable to force test failures` is also an `EngineError`.
+
+## Rule tests first
+
+`run` makes one `mutmut run` and still reports, per rule-covered mutant, both what all
+tests do and what rule tests alone do. mutmut runs a mutant's covering tests in one pytest
+session with `-x`, and pytest runs the node ids in the order given, so if rule tests run
+first, the first failing test says which tests kill the mutant. The launcher's
+`--mutineer-rule-first` (stripped before mutmut reads `sys.argv`) adds a plugin, through
+the `execute_pytest` wrapper, to every session but the stats run (`MUTANT_UNDER_TEST` is
+`"stats"`): a `trylast` `pytest_collection_modifyitems` stably moves rule tests (at least
+one id in any `rule` mark: function, class or module `pytestmark`) before the others,
+after the project's own reordering, and a session that ends with exit status 1 whose first
+failed report (setup, call or teardown; an xfail is reported as skipped) is a rule test's exits 40
+instead. mutmut writes the raw code into `.meta` (`ForkRunner.submit` and the fork server
+`os._exit` with it), and its own status table maps unknown codes to "suspicious" without
+failing; 40 is unused by mutmut and pytest. The engine maps 40 to killed for the all
+result, and derives the rule result: 40 killed, 1 survived (every rule test passed before
+another failed), 0 survived, anything else the same status as the all result.
+
+The forced-fail run and the unmutated checks of functions with no survivor run rule-first
+too, so the checks see the order the mutants saw. A mutant caught only by implementation
+tests now waits for every rule test first. `recheck` still runs mutmut with
+`-p mutineer --mutineer-rule-only` and without the switch.
 
 ## Temp dirs
 

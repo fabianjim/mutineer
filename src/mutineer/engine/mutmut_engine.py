@@ -8,8 +8,13 @@ Invariants:
 
 - **Fresh ``mutants/``.** ``run`` and ``rerun`` delete ``mutants/`` first. mutmut's cache
   keeps test copies, test-to-function maps and mutated files from earlier runs (see "The
-  cache" in ``docs/mutmut.md``), and both passes invalidate most of it anyway. Mutineer
-  writes nowhere else (ENGINE-001).
+  cache" in ``docs/mutmut.md``), and little of it would be reused anyway. Mutineer writes
+  nowhere else (ENGINE-001).
+- **One pass in ``run``**: every mutant of the changed functions against all their
+  covering tests, rule tests first in every session but the stats run. A mutant's
+  ``"rule"`` result (rule-covered functions only) comes from the same exit code: 40, a
+  rule test failed first, is killed; 1, another test failed first, is survived (see
+  ``rule_status_for_exit_code``). ``rerun`` is a rule pass with ``RULE_PASS_ARGS``.
 - **Read only what was asked, right after asking** (ENGINE-002): results come from the
   ``.meta`` keys of the functions requested in that call, read before the next call. The
   same goes for ``mutmut show``: it needs that call's mutated files in ``mutants/``.
@@ -25,7 +30,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from glob import escape as glob_escape
 from pathlib import Path
@@ -50,6 +55,7 @@ TAIL_LINES = 60
 
 _STATUS_BY_EXIT_CODE: dict[int | None, MutantStatus] = {
     1: MutantStatus.KILLED,
+    _launch.EXIT_RULE_KILLED: MutantStatus.KILLED,
     3: MutantStatus.KILLED,
     0: MutantStatus.SURVIVED,
     5: MutantStatus.NO_TESTS,
@@ -171,16 +177,16 @@ class MutmutEngine:
 
         _wipe_mutants(root)
         files = changed.files
-        all_pass = self._mutmut_run(root, files, functions, cfg.pytest_add_cli_args)
-        if all_pass.kind == "baseline_failed":
-            return finish(baseline_failed=True, baseline_output=all_pass.output)
-        if all_pass.kind == "no_tests":
+        one = self._mutmut_run(root, files, functions, cfg.pytest_add_cli_args, rule_first=True)
+        if one.kind == "baseline_failed":
+            return finish(baseline_failed=True, baseline_output=one.output)
+        if one.kind == "no_tests":
             # no changed function has a test: report every generated mutant as no_tests,
             # as mutmut does when only some functions are untested, so untested code always
-            # lowers diff_score; no rule pass, because nothing is rule-covered
+            # lowers diff_score; no rule results, because nothing is rule-covered
             untested = [
                 r.model_copy(update={"status": MutantStatus.NO_TESTS})
-                for r in _results(all_pass.exit_codes, functions, "all")
+                for r in _results(one.exit_codes, functions, "all")
             ]
             return finish(
                 baseline_failed=False,
@@ -188,52 +194,18 @@ class MutmutEngine:
                 results=self._with_details(root, untested, functions),
             )
 
-        tests_by_function = all_pass.tests_by_function
+        tests_by_function = one.tests_by_function
         unreached = [f.mutmut_name for f in functions if not tests_by_function.get(f.mutmut_name)]
-        # details now: the rule pass rebuilds mutants/ for its files only, and mutmut show
-        # can't find the original function of a file it left unmutated
-        results = self._with_details(
-            root, _results(all_pass.exit_codes, functions, "all"), functions
-        )
-
         rule_covered = [
             f
             for f in functions
             if any(rule_map.get(t) for t in tests_by_function.get(f.mutmut_name, []))
         ]
-        baseline_failed, baseline_output = False, None
-        if rule_covered:
-            rule_files = sorted({f.file for f in rule_covered})
-            rule_pass = self._mutmut_run(
-                root, rule_files, rule_covered, [*cfg.pytest_add_cli_args, *RULE_PASS_ARGS]
-            )
-            if rule_pass.kind == "baseline_failed":
-                baseline_failed, baseline_output = True, rule_pass.output
-            else:
-                # same source on disk, so a name detailed after the all pass keeps its details
-                known = {
-                    r.name: _Detail(r.line, r.original, r.mutated)
-                    for r in results
-                    if r.mutated is not None
-                }
-                if rule_pass.kind == "no_tests":
-                    # copies of all-pass results; a killed one had no details, and mutants/
-                    # still holds the rule-covered files, so show can fill it
-                    covered = {f.mutmut_name for f in rule_covered}
-                    rule_results = [
-                        r.model_copy(update={"run": "rule", "status": MutantStatus.NO_TESTS})
-                        for r in results
-                        if r.function in covered
-                    ]
-                else:
-                    rule_results = _results(rule_pass.exit_codes, rule_covered, "rule")
-                results += self._with_details(root, rule_results, functions, known)
-
+        results = rule_first_results(one.exit_codes, functions, rule_covered)
         return finish(
-            baseline_failed=baseline_failed,
-            baseline_output=baseline_output,
+            baseline_failed=False,
             unreached=unreached,
-            results=results,
+            results=self._with_details(root, results, functions),
             tests_by_function=tests_by_function,
         )
 
@@ -376,8 +348,14 @@ class MutmutEngine:
         files: list[str],
         functions: list[FunctionRef],
         pytest_args: list[str],
+        *,
+        rule_first: bool = False,
     ) -> _Pass:
-        """One ``mutmut run`` over ``functions``, read immediately."""
+        """One ``mutmut run`` over ``functions``, read immediately.
+
+        With ``rule_first``, the launcher runs rule tests first and a session whose first
+        failing test is a rule test exits ``_launch.EXIT_RULE_KILLED``.
+        """
         assert files and functions, "never call mutmut with an empty scope"
         stats = root / "mutants" / "mutmut-stats.json"
         if stats.is_file():
@@ -387,6 +365,8 @@ class MutmutEngine:
             "pytest_add_cli_args": pytest_args,
         }
         args = ["run"]
+        if rule_first:
+            args.append(_launch.RULE_FIRST)
         if self.max_children:
             args += ["--max-children", str(self.max_children)]
         args += [glob_escape(f.mutmut_name) + "__mutmut_*" for f in functions]
@@ -435,24 +415,18 @@ class MutmutEngine:
     # ---- mutant details ----
 
     def _with_details(
-        self,
-        root: Path,
-        results: list[MutantResult],
-        functions: list[FunctionRef],
-        known: Mapping[str, _Detail] | None = None,
+        self, root: Path, results: list[MutantResult], functions: list[FunctionRef]
     ) -> list[MutantResult]:
         """Fill ``line``/``original``/``mutated`` for every result that isn't killed.
 
         Call it right after the pass that produced ``results``: ``mutmut show`` reads that
-        pass's mutated files in ``mutants/``. Names in ``known`` take those details instead
-        of a ``show`` call.
+        pass's mutated files in ``mutants/``. One ``show`` call, each name once, also when a
+        name has an ``"all"`` and a ``"rule"`` result.
         """
-        details: dict[str, _Detail] = dict(known or {})
-        names = sorted(
-            {r.name for r in results if r.status not in _NOT_KILLED_EXEMPT} - details.keys()
-        )
+        details: dict[str, _Detail] = {}
+        names = sorted({r.name for r in results if r.status not in _NOT_KILLED_EXEMPT})
         if names:
-            details.update(self._show(root, names, functions))
+            details = self._show(root, names, functions)
         out = []
         for r in results:
             d = details.get(r.name)
@@ -623,7 +597,11 @@ def _read_tests(root: Path, functions: Iterable[FunctionRef]) -> dict[str, list[
 
 
 def _results(
-    exit_codes: dict[str, int | None], functions: Iterable[FunctionRef], run: Literal["all", "rule"]
+    exit_codes: dict[str, int | None],
+    functions: Iterable[FunctionRef],
+    run: Literal["all", "rule"],
+    *,
+    status: Callable[[int | None], MutantStatus] = status_for_exit_code,
 ) -> list[MutantResult]:
     """Results for the requested functions' mutants only, in mutant order."""
     out: list[MutantResult] = []
@@ -636,11 +614,35 @@ def _results(
                 mine.append((int(m.group(1)), name, code))
         for _, name, code in sorted(mine):
             out.append(
-                MutantResult(
-                    name=name, function=f.mutmut_name, run=run, status=status_for_exit_code(code)
-                )
+                MutantResult(name=name, function=f.mutmut_name, run=run, status=status(code))
             )
     return out
+
+
+def rule_status_for_exit_code(code: int | None) -> MutantStatus:
+    """The ``"rule"`` status of a rule-covered mutant from its rule-first exit code.
+
+    40 (a rule test failed first) is killed; 1 (another test failed first, so every rule
+    test, run before it, passed) and 0 are survived; any other code means what it means
+    for the ``"all"`` result.
+    """
+    if code == 1:
+        return MutantStatus.SURVIVED
+    return status_for_exit_code(code)
+
+
+def rule_first_results(
+    exit_codes: dict[str, int | None],
+    functions: Iterable[FunctionRef],
+    rule_covered: Iterable[FunctionRef],
+) -> list[MutantResult]:
+    """The ``"all"`` results of ``functions``, then the ``"rule"`` ones of ``rule_covered``.
+
+    Both come from one rule-first pass: see ``rule_status_for_exit_code``.
+    """
+    return _results(exit_codes, functions, "all") + _results(
+        exit_codes, rule_covered, "rule", status=rule_status_for_exit_code
+    )
 
 
 def _module_files(

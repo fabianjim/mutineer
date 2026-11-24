@@ -2,7 +2,7 @@
 
 Usage (always with the project root as the working directory)::
 
-    python -m mutineer.engine._launch '<json overrides>' run 'pkg.mod.x_f__mutmut_*' ...
+    python -m mutineer.engine._launch '<json overrides>' run [--mutineer-rule-first] GLOB ...
     python -m mutineer.engine._launch '<json overrides>' show NAME [NAME ...]
     python -m mutineer.engine._launch '<json overrides>' mutineer-config
     python -m mutineer.engine._launch '<json overrides>' mutineer-functions FILE [FILE ...]
@@ -33,8 +33,19 @@ when one fails, and when a split stats run fails the launcher adds that a test m
 another having run first in the same process (test pollution), which Mutineer doesn't
 support. Two such tests dealt into the same child pass; the check below catches that.
 
+``run --mutineer-rule-first`` (the launcher strips the flag before mutmut reads
+``sys.argv``; a launcher argument, not an environment variable, which would leak into the
+processes the project's tests start) runs rule tests first in every pytest session but the
+stats run: each session's items are stably partitioned, rule tests (at least one id in any
+``rule`` mark on the function, class or module) first, after the project's own reordering.
+mutmut runs a mutant's tests with ``-x``, so the first failing test says which tests kill
+it: a session whose first failed report is a rule test's exits ``EXIT_RULE_KILLED`` (40)
+instead of 1, so one pass tells "killed by a rule test" (40) from "killed only by
+another test" (1). The stats run, and so the test map, is untouched.
+
 ``run`` checks, after a normal end of mutmut's mutant loop, the functions none of whose
-mutants survived: their covering tests run unmutated, in the order their mutants got them,
+mutants survived: their covering tests run unmutated, in the order their mutants got them
+(rule tests first with ``--mutineer-rule-first``; 40 is a failure),
 each distinct list in its own forked child (at most ``max_workers`` at a time). Test
 pollution hidden in one stats child kills every mutant of a function falsely, because each
 mutant runs only its function's tests in a fresh process; a function with a survivor
@@ -79,7 +90,15 @@ Private mutmut names used: ``mutmut.configuration._load_config``, ``._config``,
 ``exit_code``, ``mutmut.utils.format_utils.mangled_name_from_mutant_name``,
 ``mutmut.mutation.trampoline.set_mutant_under_test``, and ``ForkRunner.test_runner``,
 ``ForkServerRunner.test_runner_class`` and ``.test_runner_args``, and ``.max_workers`` on
-both, for the unmutated check. Exit codes
+both, for the unmutated check. Rule-first relies on: the ``MUTANT_UNDER_TEST``
+environment variable and its ``"stats"`` value in the stats run (mutmut's
+``set_mutant_under_test`` mirrors its name into the environment); raw pytest exit codes
+passing unchanged through ``ForkRunner.submit`` (``os._exit(result)``),
+``ForkServerRunner._forkserver_main`` (``os._exit(exit_code)``) and
+``_register_mutant_result`` into ``.meta``'s ``exit_code_by_key``;
+``mutmut.stats.status_by_exit_code`` tolerating an unknown code (a ``defaultdict``); and 40
+being unused by mutmut (33-37, 24, -24, 152, 255, -9, -11) and pytest (0-5). Checked on
+mutmut 3.8.1 and main @ 2c034f2. Exit codes
 ``EXIT_VERSION`` and ``EXIT_CONFIG`` mean mutmut is out of range or has no usable
 ``source_paths``; the reason is on stderr.
 """
@@ -106,6 +125,12 @@ EXIT_CONFIG = 91
 EXIT_USAGE = 92
 STATS_CHILDREN = 4
 """Most concurrent children for mutmut's stats run; more bought nothing."""
+RULE_FIRST = "--mutineer-rule-first"
+"""The launcher argument of ``run`` that turns rule-first on; mutmut never sees it."""
+MUTMUT_STATS = "stats"
+"""mutmut's ``MUTANT_UNDER_TEST`` value for its stats run (``set_mutant_under_test``)."""
+EXIT_RULE_KILLED = 40
+"""A rule-first session whose first failed report is a rule test's; unused by mutmut and pytest."""
 TEST_POLLUTION = (
     "mutineer: the stats run was split over processes; a test may depend on another test "
     "having run first in the same process (test pollution), which Mutineer doesn't support"
@@ -226,6 +251,8 @@ def main(argv: list[str]) -> None:
         sys.argv = ["mutmut", command, *args]
         cli()
         return
+    rule_first = RULE_FIRST in args
+    args = [a for a in args if a != RULE_FIRST]
     _scope_baseline_runs()
     _split_stats_run()
     check_full_kills = _watch_full_kills()
@@ -233,7 +260,7 @@ def main(argv: list[str]) -> None:
     temp_root = tempfile.mkdtemp(prefix="mutineer-pytest-")
     owner = os.getpid()
     try:
-        _own_basetemp(temp_root)
+        _own_basetemp(temp_root, rule_first=rule_first)
         try:
             cli()
         except SystemExit as exc:
@@ -317,7 +344,7 @@ def _scope_baseline_runs() -> None:
     isolation.ForkRunner.run_forced_fail = fork_forced_fail  # type: ignore[method-assign]
 
 
-def _own_basetemp(root: str) -> None:
+def _own_basetemp(root: str, *, rule_first: bool = False) -> None:
     """Give every pytest session mutmut starts its own basetemp, made under ``root``.
 
     mutmut starts every session through ``PytestRunner.execute_pytest``; the replacement
@@ -326,6 +353,9 @@ def _own_basetemp(root: str) -> None:
     reads the option, fills an unset ``--basetemp`` with a new dir. It runs in the process
     that calls ``pytest.main``, so each forked child gets its own dir. A ``--basetemp`` the
     project sets is left alone.
+
+    With ``rule_first``, every session but the stats run (``MUTANT_UNDER_TEST`` is
+    ``"stats"`` there, also while its tests are listed) also gets ``_rule_first_plugin``.
     """
     from mutmut.runners.harness import PytestRunner
 
@@ -340,10 +370,61 @@ def _own_basetemp(root: str) -> None:
                 if config.option.basetemp is None:
                     config.option.basetemp = tempfile.mkdtemp(dir=root)
 
-        kwargs["plugins"] = [*(kwargs.get("plugins") or []), OwnBasetemp()]
+        plugins = [*(kwargs.get("plugins") or []), OwnBasetemp()]
+        if rule_first and os.environ.get("MUTANT_UNDER_TEST") != MUTMUT_STATS:
+            plugins.append(_rule_first_plugin())
+        kwargs["plugins"] = plugins
         return int(original(self, params, **kwargs))
 
     PytestRunner.execute_pytest = execute_pytest  # type: ignore[method-assign]
+
+
+def _is_rule_test(item: Any) -> bool:
+    """What ``--mutineer-rule-only`` keeps: at least one id in any ``rule`` mark.
+
+    Defined here, not taken from ``mutineer.pytest_plugin``: when Mutineer tests itself that
+    module would be imported from ``mutants/src``, a mutant under test.
+    """
+    return any(mark.args for mark in item.iter_markers("rule"))
+
+
+def _rule_first_plugin() -> Any:
+    """A pytest plugin that runs rule tests first and exits ``EXIT_RULE_KILLED`` for a rule kill.
+
+    Its ``trylast`` ``pytest_collection_modifyitems`` moves the rule tests (``_is_rule_test``)
+    before the others, keeping the order inside each group; ``trylast``, so a project's own
+    reordering and ``-m``/``-k`` deselection come first. When the session ends with exit
+    status 1 and the first failed report (setup, call or teardown: the reports that end a
+    ``-x`` session; an xfail is reported as skipped) belongs to a rule test, it sets the status to
+    ``EXIT_RULE_KILLED``. Call it only where pytest may be imported.
+    """
+    import pytest
+
+    class RuleFirst:
+        def __init__(self) -> None:
+            self.rule_ids: set[str] = set()
+            self.first_failed: str | None = None
+
+        @pytest.hookimpl(trylast=True)
+        def pytest_collection_modifyitems(self, items: list[Any]) -> None:
+            flags = [_is_rule_test(item) for item in items]
+            rule = [item for item, flag in zip(items, flags, strict=True) if flag]
+            other = [item for item, flag in zip(items, flags, strict=True) if not flag]
+            self.rule_ids = {item.nodeid for item in rule}
+            items[:] = rule + other
+
+        def pytest_runtest_logreport(self, report: Any) -> None:
+            # the reports that end a -x session; an xfail is reported as skipped
+            if self.first_failed is None and report.failed:
+                self.first_failed = report.nodeid
+
+        def pytest_sessionfinish(self, session: Any) -> None:
+            if session.exitstatus == pytest.ExitCode.TESTS_FAILED and (
+                self.first_failed in self.rule_ids
+            ):
+                session.exitstatus = EXIT_RULE_KILLED
+
+    return RuleFirst()
 
 
 def _split_stats_run() -> None:
@@ -544,7 +625,10 @@ def _watch_full_kills() -> Callable[[], int]:
     after ``run`` ended normally. For each function with covering tests and no mutant that
     exited 0, the check runs those tests unmutated, in the order its mutants got them, each
     distinct list once, in its own forked child of the launcher, at most ``max_workers`` at
-    a time. It returns 0 when all pass; otherwise it prints each failing check's pytest
+    a time. Its sessions go through ``execute_pytest`` with ``MUTANT_UNDER_TEST=""``, so
+    with rule-first on they run rule tests first, as the mutants did, and a rule test's
+    failure exits ``EXIT_RULE_KILLED``: a failure like any other here, and a kill (not 0) in
+    the recorded codes. It returns 0 when all pass; otherwise it prints each failing check's pytest
     output and a ``POLLUTED_KILLS`` line per function, and returns 1. A check that crashed
     prints its own line instead, without ``POLLUTED_KILLS``, so the run fails as an error.
     """

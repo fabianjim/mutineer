@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from mutineer.engine.mutmut_engine import RULE_PASS_ARGS, MutmutEngine, _Pass
+from mutineer.engine.mutmut_engine import MutmutEngine
 from mutineer.models import Diff, EngineRun, MutantResult, MutantStatus, RuleMap
 
 pytestmark = pytest.mark.slow
@@ -84,7 +84,7 @@ def test_agent_branch(
             assert r.line is not None and r.original and r.mutated is not None
 
 
-def test_agent_gap_two_passes(
+def test_agent_gap_all_and_rule_results(
     shop_repo: Any, engine: MutmutEngine, ship_rule_map: RuleMap, diff_of: DiffOf
 ) -> None:
     shop_repo.checkout("agent-gap")
@@ -114,7 +114,7 @@ def test_agent_gap_two_passes(
         (12, "rate = EXPRESS_FEE"),
         (12, "rate -= EXPRESS_FEE"),
     }
-    # the all-pass statuses are the ones observed before the rule pass overwrote mutmut's files
+    # rule tests run first: the express mutants are killed only by test_express_adds_fee
     assert statuses_by_text(run) == {
         "if total > FREE_SHIPPING_MIN:": {"all": S, "rule": S},
         "rate = _rate(None)": {"all": S, "rule": S},
@@ -127,10 +127,10 @@ def test_agent_gap_two_passes(
     assert express == {"rate += EXPRESS_FEE"}
 
 
-def test_details_survive_a_rule_pass_over_other_files(
+def test_details_for_rule_covered_and_other_files(
     shop_copy: Any, engine: MutmutEngine, ship_rule_map: RuleMap, diff_of: DiffOf
 ) -> None:
-    # pricing.py is only in the all pass; the rule pass rebuilds mutants/ for shipping.py
+    # pricing.py has no rule-covered function, shipping.py has one
     shop_copy.checkout("agent")
     root = shop_copy.path
     shipping = root / "src/shop/shipping.py"
@@ -152,39 +152,6 @@ def test_details_survive_a_rule_pass_over_other_files(
     for r in run.results:
         if r.status != K:
             assert r.line is not None and r.original and r.mutated is not None, r
-
-
-def test_rule_pass_no_tests_copies_keep_details(
-    shop_copy: Any,
-    engine: MutmutEngine,
-    ship_rule_map: RuleMap,
-    diff_of: DiffOf,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # the rule pass reports no tests: its results are copies of every all-pass result,
-    # killed ones included, and each copy needs details of its own
-    shop_copy.checkout("agent-gap")
-    root = shop_copy.path
-    real = engine._mutmut_run
-
-    def rule_pass_without_tests(
-        root: Path, files: list[str], functions: list[Any], pytest_args: list[str]
-    ) -> Any:
-        out = real(root, files, functions, pytest_args)
-        if pytest_args[-len(RULE_PASS_ARGS) :] == list(RULE_PASS_ARGS):
-            return _Pass("no_tests", out.output, exit_codes=out.exit_codes)
-        return out
-
-    monkeypatch.setattr(engine, "_mutmut_run", rule_pass_without_tests)
-    run = engine.run(diff_of(root), ship_rule_map, root)
-
-    assert not run.baseline_failed
-    rule_pass = by_run(run, "rule")
-    assert len(rule_pass) == 7
-    assert {r.status for r in rule_pass} == {N}
-    assert {r.mutated for r in rule_pass} >= {"rate = EXPRESS_FEE", "rate -= EXPRESS_FEE"}
-    for r in rule_pass:
-        assert r.line is not None and r.original and r.mutated is not None, r
 
 
 # ---- baseline ----
@@ -298,9 +265,9 @@ def test_no_clean_test_run(
 
     run = engine.run(diff_of(root), ship_rule_map, root)
     assert not run.baseline_failed
-    assert len(survivors(run, "rule")) == 4  # the rule pass ran, results unchanged
+    assert len(survivors(run, "rule")) == 4  # rule results unchanged
     seen = sessions(log)
-    assert stats_runs(seen) == 2  # the logger sees both passes
+    assert stats_runs(seen) == 1  # one mutmut run
     # no test runs where the mutants start from, so a clean run checks nothing
     assert clean_runs(seen) == 0
 
@@ -367,17 +334,16 @@ def test_clean_and_forced_fail_runs_use_only_covering_tests(
 
     run = engine.run(diff_of(root), ship_rule_map, root)
     assert not run.baseline_failed
-    assert len(survivors(run, "rule")) == 4  # the rule pass ran, results unchanged
-    all_pass, rule_pass = logged_runs(log)
+    assert len(survivors(run, "rule")) == 4  # rule results unchanged
+    (run_starts,) = logged_runs(log)
     covering = {t for ts in run.tests_by_function.values() for t in ts}
     rule_covering = {t for t in covering if ship_rule_map.get(t)}
     assert rule_covering
 
-    assert len(covering) < len(set(started(all_pass, "stats")))
-    assert started(all_pass, "") == started(rule_pass, "") == []
-    for run_starts, tests in ((all_pass, covering), (rule_pass, rule_covering)):
-        forced = started(run_starts, "fail")
-        assert len(forced) == 1 and forced[0] in tests
+    assert len(covering) < len(set(started(run_starts, "stats")))
+    assert started(run_starts, "") == []
+    forced = started(run_starts, "fail")
+    assert len(forced) == 1 and forced[0] in rule_covering  # rule tests first
 
     names = [r.name for r in by_run(run, "rule") if r.status == S]
     again = engine.rerun(names, ship_rule_map, root)
@@ -668,6 +634,195 @@ def test_unmutated_check_only_for_functions_without_survivors(
         assert any(starts == g_tests for starts in by_mutant.values())
 
 
+# ---- rule tests first ----
+
+PLUS_MODULE = """\
+def f(x):
+    return x + 1
+
+
+def g(x):
+    return x * 2
+"""
+
+# the rule test is slow, so under fork mutmut's duration sort runs the implementation test
+# first; the rule test kills "x - 1" but lets "x + 2" through
+SLOW_RULE_FAST_IMPL_TESTS = """\
+import time
+
+import pytest
+from pkg.m import f
+
+
+@pytest.mark.rule("R-1")
+def test_rule():
+    time.sleep(0.3)
+    assert f(1) > 0
+
+
+def test_impl():
+    assert f(1) == 2
+"""
+
+REVERSING_CONFTEST = """\
+def pytest_collection_modifyitems(items):
+    items.reverse()
+"""
+
+
+def rule_first_repo(
+    git_repo: Any, isolation: str, tests: dict[str, str], *, conftest: str = ""
+) -> Path:
+    """A repo whose diff adds ``PLUS_MODULE``'s ``f`` and ``g``, tested by ``tests``."""
+    git_repo.write(
+        "pyproject.toml",
+        f'[tool.mutmut]\nsource_paths = ["src/pkg"]\nprocess_isolation = "{isolation}"\n\n'
+        '[tool.pytest.ini_options]\npythonpath = ["src"]\n',
+    )
+    git_repo.write("src/pkg/__init__.py", "")
+    git_repo.write("tests/conftest.py", conftest)
+    git_repo.write("tests/helper.py", "STATE = {}\n")
+    for rel, text in tests.items():
+        git_repo.write(rel, text)
+    git_repo.write(".gitignore", "mutants/\n")
+    git_repo.commit("base")
+    git_repo.write("src/pkg/m.py", PLUS_MODULE)
+    return Path(git_repo.path)
+
+
+def pairs(run: EngineRun, function: str) -> list[tuple[MutantStatus, MutantStatus | None]]:
+    """(all, rule) status per mutant of ``function``, sorted; rule is None without one."""
+    rule = {r.name: r.status for r in by_run(run, "rule")}
+    out = [(r.status, rule.get(r.name)) for r in by_run(run, "all") if r.function == function]
+    return sorted(out, key=lambda p: (p[0].value, p[1].value if p[1] else ""))
+
+
+def assert_slow_rule_fast_impl(run: EngineRun) -> None:
+    assert not run.baseline_failed
+    # the rule test kills "x - 1" too, so it is no guarded_by_impl_only
+    assert pairs(run, "pkg.m.x_f") == [(K, K), (K, S)]
+    of_f = [r for r in run.results if r.function == "pkg.m.x_f"]
+    assert {(r.run, r.mutated) for r in of_f if r.status == S} == {("rule", "return x + 2")}
+
+
+@pytest.mark.parametrize("isolation", ["fork", "forkserver"])
+def test_rule_test_kill_counts_although_a_faster_impl_test_kills_too(
+    git_repo: Any, diff_of: DiffOf, isolation: str
+) -> None:
+    root = rule_first_repo(git_repo, isolation, {"tests/test_m.py": SLOW_RULE_FAST_IMPL_TESTS})
+    rule_map: RuleMap = {"tests/test_m.py::test_rule": ["R-1"]}
+    run = MutmutEngine().run(diff_of(root), rule_map, root)
+    assert_slow_rule_fast_impl(run)
+
+
+@pytest.mark.parametrize("isolation", ["fork", "forkserver"])
+def test_rule_test_kill_counts_when_the_project_reorders_tests(
+    git_repo: Any, diff_of: DiffOf, isolation: str
+) -> None:
+    root = rule_first_repo(
+        git_repo,
+        isolation,
+        {"tests/test_m.py": SLOW_RULE_FAST_IMPL_TESTS},
+        conftest=REVERSING_CONFTEST,
+    )
+    rule_map: RuleMap = {"tests/test_m.py::test_rule": ["R-1"]}
+    run = MutmutEngine().run(diff_of(root), rule_map, root)
+    assert_slow_rule_fast_impl(run)
+
+
+CLASS_RULE_TESTS = """\
+import time
+
+import pytest
+from pkg.m import f
+
+
+@pytest.mark.rule("R-1")
+class TestF:
+    def test_f(self):
+        time.sleep(0.3)
+        assert f(1) == 2
+"""
+
+MODULE_RULE_TESTS = """\
+import time
+
+import pytest
+from pkg.m import g
+
+pytestmark = pytest.mark.rule("R-2")
+
+
+def test_g():
+    time.sleep(0.3)
+    assert g(2) == 4
+"""
+
+IMPL_TESTS = """\
+from pkg.m import f, g
+
+
+def test_impl():
+    assert f(1) == 2
+    assert g(2) == 4
+"""
+
+
+@pytest.mark.parametrize("isolation", ["fork", "forkserver"])
+def test_class_and_module_rule_marks_count_as_rule_kills(
+    git_repo: Any, diff_of: DiffOf, isolation: str
+) -> None:
+    root = rule_first_repo(
+        git_repo,
+        isolation,
+        {
+            "tests/test_class_rule.py": CLASS_RULE_TESTS,
+            "tests/test_module_rule.py": MODULE_RULE_TESTS,
+            "tests/test_impl.py": IMPL_TESTS,
+        },
+    )
+    rule_map: RuleMap = {
+        "tests/test_class_rule.py::TestF::test_f": ["R-1"],
+        "tests/test_module_rule.py::test_g": ["R-2"],
+    }
+    run = MutmutEngine().run(diff_of(root), rule_map, root)
+    assert not run.baseline_failed
+    for function in ("pkg.m.x_f", "pkg.m.x_g"):
+        got = pairs(run, function)
+        assert got and set(got) == {(K, K)}, (function, got)
+
+
+# test_a (implementation) sorts before test_b (rule): in one stats child they run in id
+# order and pass, but every mutant runs test_b first, alone, where it fails
+RULE_FIRST_POLLUTED_TESTS = """\
+import helper
+import pytest
+from pkg.m import f
+
+
+def test_a():
+    helper.STATE["ready"] = True
+    f(1)
+
+
+@pytest.mark.rule("R-1")
+def test_b():
+    assert helper.STATE.get("ready")  # passes only after test_a, in the same process
+    f(1)
+"""
+
+
+@pytest.mark.parametrize("isolation", ["fork", "forkserver"])
+def test_test_pollution_that_shows_only_rule_first_blocks(
+    git_repo: Any, diff_of: DiffOf, isolation: str
+) -> None:
+    root = rule_first_repo(git_repo, isolation, {"tests/test_m.py": RULE_FIRST_POLLUTED_TESTS})
+    rule_map: RuleMap = {"tests/test_m.py::test_b": ["R-1"]}
+    run = MutmutEngine(max_children=1).run(diff_of(root), rule_map, root)
+    assert run.baseline_failed
+    assert run.results == []
+
+
 # ---- mutmut's stats run ----
 
 PID_LOGGER = """
@@ -734,17 +889,15 @@ def test_stats_run_split_over_children(
 
     single = one.run(diff_of(root), ship_rule_map, root)
     assert not single.baseline_failed
-    single_all, single_rule = stats_by_pid(log)
-    assert len(single_all) == len(single_rule) == 1  # max_children 1: one stats process
-    assert sorted(*single_all.values()) == suite
+    (single_stats,) = stats_by_pid(log)
+    assert len(single_stats) == 1  # max_children 1: one stats process
+    assert sorted(*single_stats.values()) == suite
 
     split = two.run(diff_of(root), ship_rule_map, root)
     assert not split.baseline_failed
-    split_all, split_rule = stats_by_pid(log)
-    assert len(split_all) == 2
-    assert sorted(t for tests in split_all.values() for t in tests) == suite  # each test once
-    rule_tests = {t for tests in split_rule.values() for t in tests}
-    assert rule_tests and rule_tests <= set(ship_rule_map)  # the listing kept the rule filter
+    (split_stats,) = stats_by_pid(log)
+    assert len(split_stats) == 2
+    assert sorted(t for tests in split_stats.values() for t in tests) == suite  # each test once
     assert split.tests_by_function == single.tests_by_function
     assert statuses(split) == statuses(single)
     assert len(survivors(split, "rule")) == 4
@@ -755,6 +908,8 @@ def test_stats_run_split_over_children(
     split_again = two.rerun(names, ship_rule_map, root)
     (split_rerun,) = stats_by_pid(log)
     assert len(single_rerun) == 1 and len(split_rerun) == 2
+    rule_tests = {t for tests in split_rerun.values() for t in tests}
+    assert rule_tests and rule_tests <= set(ship_rule_map)  # the listing kept the rule filter
     assert not split_again.baseline_failed
     assert statuses(split_again) == statuses(single_again)
     assert {r.status for r in split_again.results} == {S}

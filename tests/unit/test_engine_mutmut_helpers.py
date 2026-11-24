@@ -1,4 +1,4 @@
-"""Engine helpers that don't need mutmut to run: status map, line mapping."""
+"""Engine helpers that don't need mutmut to run: status maps, line mapping."""
 
 from __future__ import annotations
 
@@ -6,17 +6,17 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
 from mutineer.engine import _launch
 from mutineer.engine.mutmut_engine import (
     MutmutEngine,
-    _Detail,
     locate,
     output_tail,
     render_anchors,
+    rule_first_results,
     status_for_exit_code,
 )
 from mutineer.models import FunctionRef, MutantResult, MutantStatus
@@ -26,6 +26,7 @@ from mutineer.models import FunctionRef, MutantResult, MutantStatus
     ("code", "status"),
     [
         (1, "killed"),
+        (40, "killed"),
         (3, "killed"),
         (0, "survived"),
         (5, "no_tests"),
@@ -193,18 +194,20 @@ def test_preflight_reads_the_projects_mutmut_config(tmp_path: Path) -> None:
     assert cfg.version.startswith("3.8")
 
 
-def _result(n: int, status: MutantStatus) -> MutantResult:
-    return MutantResult(
-        name=f"shop.x_f__mutmut_{n}", function="shop.x_f", run="rule", status=status
-    )
+def _fn(name: str = "shop.x_f") -> FunctionRef:
+    return FunctionRef(file="f.py", qualname="f", mutmut_name=name, start_line=1, end_line=2)
 
 
-def test_details_reuse_known_names_and_show_only_the_rest(
+def _result(n: int, status: MutantStatus, run: Literal["all", "rule"] = "rule") -> MutantResult:
+    return MutantResult(name=f"shop.x_f__mutmut_{n}", function="shop.x_f", run=run, status=status)
+
+
+def test_details_show_each_name_once_for_both_results(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # the rule pass reuses all-pass details: no mutmut show for names already detailed
+    # killed by an implementation test only: killed in "all", survived in "rule", and both
+    # copies need the details of one mutmut show
     (tmp_path / "f.py").write_text("def f(x):\n    return x + 1\n", encoding="utf-8")
-    fn = FunctionRef(file="f.py", qualname="f", mutmut_name="shop.x_f", start_line=1, end_line=2)
     shown: list[list[str]] = []
 
     def fake_launch(root: Path, overrides: object, args: list[str]) -> Any:
@@ -215,16 +218,75 @@ def test_details_reuse_known_names_and_show_only_the_rest(
 
     engine = MutmutEngine()
     monkeypatch.setattr(engine, "_launch", fake_launch)
-    known = {"shop.x_f__mutmut_1": _Detail(2, "return x + 1", "return x * 1")}
+    results = [
+        _result(1, MutantStatus.KILLED, "all"),
+        _result(2, MutantStatus.SURVIVED, "all"),
+        _result(1, MutantStatus.SURVIVED, "rule"),
+        _result(2, MutantStatus.SURVIVED, "rule"),
+    ]
+    out = engine._with_details(tmp_path, results, [_fn()])
+    assert shown == [["shop.x_f__mutmut_1", "shop.x_f__mutmut_2"]]
+    assert out[0].mutated is None  # killed results get no details
+    for r in out[1:]:
+        assert (r.line, r.original, r.mutated) == (2, "return x + 1", "return x - 1")
 
-    same = [_result(1, MutantStatus.SURVIVED), _result(2, MutantStatus.KILLED)]
-    out = engine._with_details(tmp_path, same, [fn], known)
-    assert shown == []
-    assert (out[0].line, out[0].original, out[0].mutated) == (2, "return x + 1", "return x * 1")
-    assert out[1].mutated is None  # killed results get no details
 
-    new = [_result(1, MutantStatus.SURVIVED), _result(3, MutantStatus.SURVIVED)]
-    out = engine._with_details(tmp_path, new, [fn], known)
-    assert shown == [["shop.x_f__mutmut_3"]]
-    assert out[0].mutated == "return x * 1"
-    assert (out[1].line, out[1].original, out[1].mutated) == (2, "return x + 1", "return x - 1")
+def test_details_without_a_mutant_to_show(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_launch(root: Path, overrides: object, args: list[str]) -> Any:
+        raise AssertionError("mutmut show ran")
+
+    engine = MutmutEngine()
+    monkeypatch.setattr(engine, "_launch", no_launch)
+    results = [_result(1, MutantStatus.KILLED, "all"), _result(1, MutantStatus.KILLED, "rule")]
+    assert engine._with_details(tmp_path, results, [_fn()]) == results
+
+
+K, S = MutantStatus.KILLED, MutantStatus.SURVIVED
+
+
+@pytest.mark.parametrize(
+    ("code", "all_status", "rule_status"),
+    [
+        (_launch.EXIT_RULE_KILLED, K, K),  # a rule test failed first
+        (1, K, S),  # another test failed, every rule test (run first) passed
+        (0, S, S),
+        (3, K, K),  # pytest's internal error is a kill, as mutmut has it
+        (5, MutantStatus.NO_TESTS, MutantStatus.NO_TESTS),
+        (33, MutantStatus.NO_TESTS, MutantStatus.NO_TESTS),
+        (34, MutantStatus.SKIPPED, MutantStatus.SKIPPED),
+        (35, MutantStatus.SUSPICIOUS, MutantStatus.SUSPICIOUS),
+        (36, MutantStatus.TIMEOUT, MutantStatus.TIMEOUT),
+        (37, MutantStatus.TYPE_CHECK, MutantStatus.TYPE_CHECK),
+        (255, MutantStatus.TIMEOUT, MutantStatus.TIMEOUT),
+        (-11, MutantStatus.SEGFAULT, MutantStatus.SEGFAULT),
+        (2, MutantStatus.INTERRUPTED, MutantStatus.INTERRUPTED),
+        (None, MutantStatus.NOT_CHECKED, MutantStatus.NOT_CHECKED),
+        (99, MutantStatus.SUSPICIOUS, MutantStatus.SUSPICIOUS),
+    ],
+)
+def test_rule_first_results_derive_both_statuses_from_one_code(
+    code: int | None, all_status: MutantStatus, rule_status: MutantStatus
+) -> None:
+    codes = {"shop.x_f__mutmut_1": code}
+    out = rule_first_results(codes, [_fn()], [_fn()])
+    assert [(r.name, r.run, r.status) for r in out] == [
+        ("shop.x_f__mutmut_1", "all", all_status),
+        ("shop.x_f__mutmut_1", "rule", rule_status),
+    ]
+
+
+def test_rule_first_results_only_rule_covered_functions_get_a_rule_result() -> None:
+    codes = {
+        "shop.x_f__mutmut_2": 1,
+        "shop.x_f__mutmut_1": _launch.EXIT_RULE_KILLED,
+        "shop.x_g__mutmut_1": 1,
+        "shop.x_h__mutmut_1": 0,  # not requested
+    }
+    out = rule_first_results(codes, [_fn(), _fn("shop.x_g")], [_fn()])
+    assert [(r.name, r.run, r.status) for r in out] == [
+        ("shop.x_f__mutmut_1", "all", K),
+        ("shop.x_f__mutmut_2", "all", K),
+        ("shop.x_g__mutmut_1", "all", K),
+        ("shop.x_f__mutmut_1", "rule", K),
+        ("shop.x_f__mutmut_2", "rule", S),
+    ]

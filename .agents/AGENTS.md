@@ -17,7 +17,7 @@ from implementation detail, and catches tests that were weakened to get green.
 
 `mutineer run` takes the diff from `git merge-base <base> HEAD` to the files on disk
 (uncommitted and untracked files count), runs tamper detection on the changed tests,
-collects the rule map with pytest, runs mutmut on the changed functions (twice), triages the
+collects the rule map with pytest, runs mutmut on the changed functions (once), triages the
 mutants, and renders one verdict. When nothing the verdict depends on changed since the last
 `run`, `run` shows the stored verdict without running pytest or mutmut (`--no-reuse` always
 runs); `fresh` says whether it would, without running anything. `recheck` reruns the
@@ -43,11 +43,15 @@ for them:
   is INFO. One finding per test.
 - **Coverage is per function** (mutmut maps tests to functions). A rule-covered function is
   a changed function whose covering tests include a rule test.
-- **Two mutation passes:** all mutants of changed functions against all tests, then the
-  rule-covered functions' mutants against rule tests only. The rule pass selects with
+- **One mutation pass:** all mutants of changed functions against all tests, rule tests
+  first in every pytest session but the stats run. mutmut stops a mutant's session at the
+  first failure, so a session whose first failing test is a rule test exits 40, and each
+  rule-covered mutant's `"rule"` result is derived from that: 40 killed, 1 (another test
+  failed, every rule test passed) survived, anything else the same as its `"all"` result.
+  `recheck`'s rule pass runs rule tests only and selects them with
   `-p mutineer --mutineer-rule-only`, never with `-m`: pytest keeps only the last `-m`, so
   adding one would drop the project's own.
-- **Triage:** survived in both passes → `survivor_rule` for the agent (WARN); caught only by
+- **Triage:** survived in both results → `survivor_rule` for the agent (WARN); caught only by
   an implementation test → `guarded_by_impl_only` for a human; not rule-covered →
   `survivor_unowned` for a human; timeouts and other unclear results count in no score.
   A disputed `survivor_rule` is `mutant_disputed` for a human (WARN while open, INFO and in
@@ -76,11 +80,10 @@ for them:
   - delete `mutants/` before every mutmut run: its cache gives wrong answers across
     branches and passes. Deleted or renamed tests keep running from `mutants/tests/`,
     a test whose body changed keeps its old test map, and a file copied unmutated earlier
-    fails a later run with `nothing matches`. The two passes use different pytest args,
-    which resets the cache anyway, and mutants requested by name always rerun;
+    fails a later run with `nothing matches`. Mutants requested by name always rerun;
   - read `.meta` exit codes, `mutmut-stats.json` and `mutmut show` right after each pass
-    (the next pass overwrites them), only for the names requested; never use
-    `mutmut results`;
+    of `run` and `recheck` (the next one overwrites them), only for the names requested;
+    never use `mutmut results`;
   - run mutmut's forced-fail run on the requested functions' covering tests only, and skip
     it when there are none; always skip the clean run: it passes whenever stats did,
     because no test runs in the process the mutants start from;

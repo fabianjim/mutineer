@@ -195,8 +195,8 @@ can't mutate (decorated functions, module-level code, excluded files) are report
 
 ### Who gets what
 
-In a function a rule test covers, each mutant is run twice: against all tests and
-against rule tests only.
+In a function a rule test covers, each mutant runs once against all its tests, rule tests
+first, so Mutineer knows whether all tests catch it and whether rule tests alone do.
 
 | All tests | Rule tests only | Finding | For |
 |---|---|---|---|
@@ -269,12 +269,13 @@ markers in tests).
 
 **`mutants/` is deleted at the start of every `run` that isn't reused, and of every
 `recheck`.** mutmut's cache gives
-wrong answers across branches and between Mutineer's two passes, so Mutineer always
+wrong answers across branches and between Mutineer's runs, so Mutineer always
 starts clean. If you keep your own mutmut results in `mutants/`, they will be lost; run
 mutmut and Mutineer in separate checkouts if you need both.
 
-Your mutmut config (`[tool.mutmut]`, or `[mutmut]` in `setup.cfg`) is never edited: Mutineer sets mutmut's scope in memory. The
-rule pass adds `-p mutineer --mutineer-rule-only` to pytest, and leaves any `-m` of yours
+Your mutmut config (`[tool.mutmut]`, or `[mutmut]` in `setup.cfg`) is never edited: Mutineer sets mutmut's scope in memory. `run`
+runs your rule tests first in each mutant's session; `recheck` adds
+`-p mutineer --mutineer-rule-only` to pytest. Both leave any `-m` of yours
 (in `addopts` or `pytest_add_cli_args`) alone.
 
 ## Configuration

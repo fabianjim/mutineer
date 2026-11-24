@@ -1,27 +1,27 @@
 """Triage: turn an ``EngineRun`` into findings for the right reader, and score it.
 
-Each mutant's status in each pass falls into one group:
+Each mutant's status in each result (``"all"`` and ``"rule"``) falls into one group:
 
 - **K**: killed, or caught by the type check;
 - **S**: survived;
 - **N**: no tests;
 - **I**: anything else (timeout, suspicious, segfault, skipped, interrupted, not checked),
-  or a rule-covered mutant with no rule-pass result.
+  or a rule-covered mutant with no rule result.
 
 A function is *rule-covered* when one of the tests that cover it (``tests_by_function``,
-from the all pass) has a rule id in the rule map. Its mutants are judged by both passes:
+from the stats run) has a rule id in the rule map. Its mutants are judged by both results:
 
 ========  =========  =========================================
-all pass  rule pass  finding
+all       rule       finding
 ========  =========  =========================================
 K         K          none
 K         S or N     ``guarded_by_impl_only`` (human, per function)
 S or N    S or N     ``survivor_rule`` (agent, per mutant)
 S or N    K          ``mutant_inconclusive`` (human, per function)
-I in either pass     ``mutant_inconclusive`` (human, per function)
+I in either result   ``mutant_inconclusive`` (human, per function)
 ========  =========  =========================================
 
-Mutants of other functions are judged by the all pass alone: S or N is
+Mutants of other functions are judged by the all result alone: S or N is
 ``survivor_unowned`` and I is ``mutant_inconclusive``, both per function. A function no
 test reaches is one ``unreached`` finding instead. Changed lines mutmut can't mutate are
 one ``unmeasured_change`` per file.
