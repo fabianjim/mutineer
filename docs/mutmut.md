@@ -193,11 +193,11 @@ session with `-x`, and pytest runs the node ids in the order given, so if rule t
 first, the first failing test says which tests kill the mutant. The launcher's
 `--mutineer-rule-first` (stripped before mutmut reads `sys.argv`) adds a plugin, through
 the `execute_pytest` wrapper, to every session but the stats run (`MUTANT_UNDER_TEST` is
-`"stats"`): a `trylast` `pytest_collection_modifyitems` stably moves rule tests (at least
+`"stats"`). A `trylast` `pytest_collection_modifyitems` stably moves rule tests (at least
 one id in any `rule` mark: function, class or module `pytestmark`) before the others,
-after the project's own reordering, and a session that ends with exit status 1 whose first
-failed report (setup, call or teardown; an xfail is reported as skipped) is a rule test's exits 40
-instead. mutmut writes the raw code into `.meta` (`ForkRunner.submit` and the fork server
+after the project's own reordering. When a session would exit 1 and its first failed
+report belongs to a rule test, it exits 40 instead. A failed report is a setup, call or
+teardown failure; an xfail is reported as skipped. mutmut writes the raw code into `.meta` (`ForkRunner.submit` and the fork server
 `os._exit` with it), and its own status table maps unknown codes to "suspicious" without
 failing; 40 is unused by mutmut and pytest. The engine maps 40 to killed for the all
 result, and derives the rule result: 40 killed, 1 survived (every rule test passed before

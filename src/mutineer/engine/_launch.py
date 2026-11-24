@@ -395,8 +395,8 @@ def _rule_first_plugin() -> Any:
     before the others, keeping the order inside each group; ``trylast``, so a project's own
     reordering and ``-m``/``-k`` deselection come first. When the session ends with exit
     status 1 and the first failed report (setup, call or teardown: the reports that end a
-    ``-x`` session; an xfail is reported as skipped) belongs to a rule test, it sets the status to
-    ``EXIT_RULE_KILLED``. Call it only where pytest may be imported.
+    ``-x`` session; an xfail is reported as skipped) belongs to a rule test, it sets the
+    status to ``EXIT_RULE_KILLED``. Call it only where pytest may be imported.
     """
     import pytest
 
@@ -628,8 +628,8 @@ def _watch_full_kills() -> Callable[[], int]:
     a time. Its sessions go through ``execute_pytest`` with ``MUTANT_UNDER_TEST=""``, so
     with rule-first on they run rule tests first, as the mutants did, and a rule test's
     failure exits ``EXIT_RULE_KILLED``: a failure like any other here, and a kill (not 0) in
-    the recorded codes. It returns 0 when all pass; otherwise it prints each failing check's pytest
-    output and a ``POLLUTED_KILLS`` line per function, and returns 1. A check that crashed
+    the recorded codes. It returns 0 when all pass; otherwise it prints each failing check's
+    pytest output and a ``POLLUTED_KILLS`` line per function, and returns 1. A check that crashed
     prints its own line instead, without ``POLLUTED_KILLS``, so the run fails as an error.
     """
     import functools

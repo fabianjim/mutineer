@@ -139,6 +139,13 @@ def test_exit_40_only_when_the_first_failure_is_a_rule_tests(
     assert rec.ret == code
 
 
+def test_the_first_failure_decides_when_later_tests_fail_too(pytester: pytest.Pytester) -> None:
+    # mutmut always passes -x; without it a later failure must not overwrite the first
+    pytester.makepyfile(FAILING.format(impl=False, rule=False, xfail=True, fixture="tmp_path"))
+    rec = pytester.inline_run("-p", "no:cacheprovider", plugins=[_launch._rule_first_plugin()])
+    assert rec.ret == _launch.EXIT_RULE_KILLED
+
+
 def test_other_exit_codes_pass_unchanged(pytester: pytest.Pytester) -> None:
     pytester.makepyfile('import pytest\n\n\n@pytest.mark.rule("R-1")\ndef test_x():\n    pass\n')
     assert _run(pytester, "-k", "nothing_matches").ret == pytest.ExitCode.NO_TESTS_COLLECTED
