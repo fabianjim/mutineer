@@ -35,7 +35,11 @@ The inputs, each a named part so ``fresh`` can say what changed:
 6. ``python``: ``sys.version``, ``sys.executable``, Mutineer's version and a hash of its
    installed package files (an editable install changes without a version bump), and
    the name and version of every installed distribution, which covers mutmut, pytest,
-   plugins and the project's dependencies.
+   plugins and the project's dependencies. The package hash skips ``*.meta`` files: when
+   Mutineer mutation-tests itself, its package is mutmut's copy in ``mutants/``, where
+   mutmut rewrites a ``.meta`` result file next to each mutated module after every mutant,
+   while other mutants' tests still run. They hold mutmut's results, not Mutineer's code;
+   hashed, they change the fingerprint during a test. Every other package file counts.
 7. ``environment``: the variables that change how pytest or Python run the tests:
    ``PYTEST_ADDOPTS``, ``PYTEST_PLUGINS``, ``PYTEST_DISABLE_PLUGIN_AUTOLOAD``,
    ``PYTHONPATH`` and ``PYTHONHASHSEED`` (set order decides the order of a mutant's tests).
@@ -104,6 +108,8 @@ _MUTMUT_ALSO_COPY = [
     "Pipfile.lock",
     "pdm.lock",
 ]
+# mutmut's per-module result file, rewritten in its copy of the sources after every mutant
+_MUTMUT_RESULTS = ".meta"
 _DELETED = "deleted"
 _SHOWN = 10
 """How many paths ``fresh`` names per input before summarising the rest."""
@@ -234,19 +240,16 @@ def _walk(root: Path, top: Path, seen: set[str]) -> Iterable[Path]:
                 yield Path(dirpath) / name
 
 
-def _python() -> dict[str, Any]:
+def _python() -> list[Any]:
     package = Path(mutineer.__file__).parent
-    files = {_rel(package, f): _file_hash(f) for f in _walk(package, package, set())}
-    dists = sorted(
-        f"{d.metadata['Name']}=={d.version}" for d in metadata.distributions() if d.metadata
-    )
-    return {
-        "version": sys.version,
-        "executable": sys.executable,
-        "mutineer": mutineer.__version__,
-        "package": _digest(files),
-        "distributions": dists,
+    files = {
+        _rel(package, f): _file_hash(f)
+        for f in _walk(package, package, set())
+        if not f.name.endswith(_MUTMUT_RESULTS)
     }
+    dists = sorted(f"{d.name}=={d.version}" for d in metadata.distributions() if d.metadata)
+    # a fixed order and no key names: the values only feed a hash
+    return [sys.version, sys.executable, mutineer.__version__, _digest(files), dists]
 
 
 # ---- mutmut's config, read as mutmut 3.8 reads it ----

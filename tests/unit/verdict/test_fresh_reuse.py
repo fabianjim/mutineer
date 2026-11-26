@@ -239,6 +239,24 @@ def test_a_changed_python(ran: Any, capsys: Any, monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.rule("REUSE-001")
+def test_a_changed_installed_distribution(
+    project: Any, capsys: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # a pytest plugin swapped for another of the same version changes what pytest does
+    site = tmp_path / "site"
+    plugin = site / "pytest_one-1.0.dist-info"
+    plugin.mkdir(parents=True)
+    (plugin / "METADATA").write_text("Metadata-Version: 2.1\nName: pytest-one\nVersion: 1.0\n")
+    monkeypatch.syspath_prepend(str(site))
+    run_no_mutation(capsys)
+    assert fresh(capsys, "--no-mutation") == (0, "fresh\n")
+    (plugin / "METADATA").write_text("Metadata-Version: 2.1\nName: pytest-two\nVersion: 1.0\n")
+    plugin.rename(site / "pytest_two-1.0.dist-info")
+    code, out = fresh(capsys, "--no-mutation")
+    assert code == 1 and "python" in out
+
+
+@pytest.mark.rule("REUSE-001")
 def test_a_block_is_never_reused_across_a_changed_mutineer(
     project: Any, capsys: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -256,6 +274,32 @@ def test_a_block_is_never_reused_across_a_changed_mutineer(
     (package / "verdict.py").write_text((package / "verdict.py").read_text() + "\n# changed\n")
     code, out = fresh(capsys, "--no-mutation")
     assert code == 1 and "python" in out
+    # a package data file counts too, not only the modules
+    assert main(["run", "--no-mutation", "--format", "json"]) == 2
+    assert fresh(capsys, "--no-mutation") == (0, "fresh\n")
+    skill = package / "skill" / "SKILL.md"
+    skill.write_text(skill.read_text() + "\nchanged\n")
+    code, out = fresh(capsys, "--no-mutation")
+    assert code == 1 and "python" in out
+
+
+@pytest.mark.rule("REUSE-001")
+def test_mutmut_result_files_in_mutineers_package_keep_it_fresh(
+    project: Any, capsys: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # when Mutineer mutation-tests itself it runs from mutmut's copy, where mutmut rewrites
+    # a `.meta` result file next to each mutated module while tests are still running
+    package = tmp_path / "mutants" / "src" / "mutineer"
+    shutil.copytree(
+        Path(mutineer.__file__).parent, package, ignore=shutil.ignore_patterns("__pycache__")
+    )
+    monkeypatch.setattr(mutineer, "__file__", str(package / "__init__.py"))
+    run_no_mutation(capsys)
+    meta = package / "verdict.py.meta"
+    meta.write_text('{"exit_code_by_key": {}}')
+    assert fresh(capsys, "--no-mutation") == (0, "fresh\n")
+    meta.write_text('{"exit_code_by_key": {"mutineer.verdict.x_decide__mutmut_1": 1}}')
+    assert fresh(capsys, "--no-mutation") == (0, "fresh\n")
 
 
 @pytest.mark.rule("REUSE-001")
